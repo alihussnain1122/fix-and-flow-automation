@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w @fix-and-flow/backend\" \"npm run dev -w @fix-and-flow/frontend\"",
+    "dev": "npm run dev:infra && concurrently \"npm run dev -w @fix-and-flow/backend\" \"npm run dev -w @fix-and-flow/frontend\"",
+    "dev:infra": "docker compose up -d postgres redis",
     "dev:backend": "npm run dev -w @fix-and-flow/backend",
     "dev:frontend": "npm run dev -w @fix-and-flow/frontend",
     "build": "npm run build -w @fix-and-flow/types && npm run build -w @fix-and-flow/shared && npm run build -w @fix-and-flow/backend && npm run build -w @fix-and-flow/frontend",

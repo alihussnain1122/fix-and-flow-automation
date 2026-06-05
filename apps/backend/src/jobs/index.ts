@@ -7,7 +7,7 @@ import { processCheckInboxJob } from './check-inbox.job';
 import { processSchedulerTick } from './scheduler.job';
 import { logger } from '../config/logger';
 
-export function initializeWorkers(): void {
+export async function initializeWorkers(): Promise<void> {
   registerWorker(
     QUEUE_NAMES.POSTING,
     async (job: Job) => {
@@ -46,17 +46,21 @@ export function initializeWorkers(): void {
     1,
   );
 
-  const schedulerQueue = getSchedulerQueue();
-  schedulerQueue.add(
-    'scheduler-tick',
-    {},
-    {
-      repeat: { every: 60_000 },
-      jobId: 'scheduler-tick-recurring',
-    },
-  );
+  try {
+    const schedulerQueue = getSchedulerQueue();
+    await schedulerQueue.add(
+      'scheduler-tick',
+      {},
+      {
+        repeat: { every: 60_000 },
+        jobId: 'scheduler-tick-recurring',
+      },
+    );
 
-  logger.info('All BullMQ workers initialized');
+    logger.info('All BullMQ workers initialized');
+  } catch (error) {
+    logger.error({ error }, 'BullMQ worker initialization completed with a scheduler warning');
+  }
 }
 
 export * from './create-post.job';

@@ -49,7 +49,7 @@ docker compose up -d postgres redis
 # Run database migrations
 npm run db:migrate
 
-# Start development servers
+# Start infrastructure and development servers
 npm run dev
 ```
 
@@ -66,7 +66,7 @@ docker compose up -d --build
 
 | Script | Description |
 |--------|-------------|
-| `npm run dev` | Start backend + frontend in development |
+| `npm run dev` | Start Postgres, Redis, backend, and frontend in development |
 | `npm run dev:backend` | Start backend only |
 | `npm run dev:frontend` | Start frontend only |
 | `npm run build` | Build all packages |

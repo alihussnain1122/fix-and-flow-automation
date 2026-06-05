@@ -10,7 +10,7 @@ async function bootstrap(): Promise<void> {
   try {
     await connectDatabase();
     getRedis();
-    initializeWorkers();
+    await initializeWorkers();
 
     const app = createApp();
 
@@ -41,7 +41,8 @@ async function bootstrap(): Promise<void> {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
   } catch (error) {
-    logger.fatal({ error }, 'Failed to start server');
+    const details = error instanceof Error ? { message: error.message, stack: error.stack } : { error };
+    logger.fatal(details, 'Failed to start server');
     process.exit(1);
   }
 }

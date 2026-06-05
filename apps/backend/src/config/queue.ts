@@ -7,7 +7,7 @@ import { QUEUE_NAMES } from '@fix-and-flow/shared';
 const connection = getRedisConnectionOptions();
 
 function getQueueName(name: string): string {
-  return `${env.QUEUE_PREFIX}:${name}`;
+  return `${env.QUEUE_PREFIX}-${name}`;
 }
 
 const queues = new Map<string, Queue>();
