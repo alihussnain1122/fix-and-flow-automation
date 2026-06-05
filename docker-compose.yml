@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fix-and-flow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fixandflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fixandflow_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-fixandflow}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-fixandflow}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fix-and-flow-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    container_name: fix-and-flow-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-fixandflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fixandflow_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-fixandflow}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-to-32-char-secret-key!!}
+      QUEUE_PREFIX: ${QUEUE_PREFIX:-fix-and-flow}
+      PLAYWRIGHT_HEADLESS: ${PLAYWRIGHT_HEADLESS:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - '${PORT:-4000}:4000'
+    volumes:
+      - backend_logs:/app/apps/backend/logs
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_logs:

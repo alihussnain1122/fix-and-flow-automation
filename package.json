@@ -1,0 +1,35 @@
+{
+  "name": "fix-and-flow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scalable Facebook Marketplace automation system",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @fix-and-flow/backend\" \"npm run dev -w @fix-and-flow/frontend\"",
+    "dev:backend": "npm run dev -w @fix-and-flow/backend",
+    "dev:frontend": "npm run dev -w @fix-and-flow/frontend",
+    "build": "npm run build -w @fix-and-flow/types && npm run build -w @fix-and-flow/shared && npm run build -w @fix-and-flow/backend && npm run build -w @fix-and-flow/frontend",
+    "build:backend": "npm run build -w @fix-and-flow/backend",
+    "build:frontend": "npm run build -w @fix-and-flow/frontend",
+    "start": "npm run start -w @fix-and-flow/backend",
+    "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\"",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",
+    "db:migrate": "npm run db:migrate -w @fix-and-flow/backend"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
