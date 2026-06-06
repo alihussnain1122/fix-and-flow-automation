@@ -51,6 +51,7 @@ export class PlaywrightEngine {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-http2',
+        '--disable-quic',
       ],
     };
 
@@ -216,7 +217,16 @@ export class PlaywrightEngine {
     }, password);
     await randomDelay(1000, 2000);
 
-    await page.locator(SELECTORS.login.loginButton).first().click();
+    const loginButton = page.locator(SELECTORS.login.loginButton).first();
+    const canClickLogin = await loginButton.isVisible({ timeout: 4000 }).catch(() => false);
+
+    if (canClickLogin) {
+      await loginButton.click();
+    } else {
+      logger.warn('Login button not found with known selectors; submitting with Enter key');
+      await passInput.press('Enter');
+    }
+
     await randomDelay(5000, 8000);
 
     const health = await this.checkPageHealth(page);

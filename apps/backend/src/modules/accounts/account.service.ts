@@ -101,7 +101,8 @@ export class AccountService {
       level: LogLevel.INFO,
       category: LogCategory.ACCOUNT,
       message: `Account deleted: ${id}`,
-      accountId: id,
+      accountId: undefined,
+      metadata: { deletedAccountId: id },
     });
 
     return deleted;

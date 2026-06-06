@@ -3,7 +3,8 @@ export const SELECTORS = {
   login: {
     emailInput: '#email, input[name="email"]',
     passwordInput: '#pass, input[name="pass"], input[type="password"]',
-    loginButton: 'button[name="login"], button[type="submit"]',
+    loginButton:
+      'button[name="login"], button[type="submit"], input[type="submit"], [aria-label="Log in"], [aria-label="Log In"], [data-testid="royal_login_button"]',
   },
   checkpoint: {
     bodyText: [

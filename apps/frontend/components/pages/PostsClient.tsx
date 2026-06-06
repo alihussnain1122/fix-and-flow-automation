@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { DataTable } from '@/components/ui/DataTable';
 import { Modal, ModalActions } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/FormFields';
+import { Input, Textarea } from '@/components/ui/FormFields';
 
 export function PostsClient() {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
@@ -69,6 +69,7 @@ export function PostsClient() {
             {accounts.map((a) => <option key={String(a.id)} value={String(a.id)}>{String(a.email)}</option>)}
           </select>
           <Input label="Title (optional — auto-rotate)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+          <Textarea label="Description (optional — auto-rotate)" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           <Input label="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
         </div>
       </Modal>
