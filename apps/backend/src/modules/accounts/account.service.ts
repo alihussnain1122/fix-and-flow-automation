@@ -222,6 +222,71 @@ export class AccountService {
     return result;
   }
 
+  async loginAccount(id: string) {
+    const account = await this.findById(id);
+    const creds = await credentialsService.buildForAccount(id);
+
+    if (!creds.password) {
+      throw new ValidationError('Account password is required to connect Facebook');
+    }
+
+    if (account.proxyId) {
+      try {
+        const health = await proxyService.healthCheck(account.proxyId);
+        if (!health.ok) {
+          await logService.create({
+            level: LogLevel.WARN,
+            category: LogCategory.PROXY,
+            message: `Proxy health check failed before login: ${health.error}`,
+            accountId: id,
+          });
+        }
+      } catch {
+        logger.warn({ accountId: id, proxyId: account.proxyId }, 'Proxy health check skipped');
+      }
+    }
+
+    const result = await playwrightEngine.loginAccount(
+      creds,
+      {
+        onCookiesUpdated: async (cookies) => {
+          await credentialsService.saveCookiesFromSession(id, cookies);
+        },
+        onAccountHealth: async (health) => {
+          if (health.status === AccountStatus.BANNED) {
+            await this.markAsBanned(id, health.reason);
+          } else if (health.status === AccountStatus.FLAGGED) {
+            await this.markAsFlagged(id, health.reason);
+          } else if (health.isLoggedIn) {
+            await this.activate(id);
+          }
+        },
+      },
+      {
+        onProxyFailure: async () => {
+          if (account.proxyId) {
+            await proxyService.markFailed(account.proxyId);
+            await logService.create({
+              level: LogLevel.WARN,
+              category: LogCategory.PROXY,
+              message: 'Proxy marked failed during Facebook login — retried without proxy',
+              accountId: id,
+            });
+          }
+        },
+      },
+    );
+
+    await logService.create({
+      level: result.success ? LogLevel.INFO : LogLevel.WARN,
+      category: LogCategory.ACCOUNT,
+      message: `Facebook login: ${result.status} — ${result.reason ?? 'OK'}`,
+      accountId: id,
+    });
+
+    return result;
+  }
+
   async assignProxy(id: string, proxyId?: string) {
     await this.findById(id);
 

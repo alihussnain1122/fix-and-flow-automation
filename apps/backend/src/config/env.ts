@@ -48,6 +48,13 @@ const envSchema = z.object({
     .default('true'),
   PLAYWRIGHT_BROWSER_CHANNEL: z.enum(['chrome', 'msedge', '']).default(''),
   PLAYWRIGHT_GLOBAL_PROXY: z.string().optional(),
+  /** When false, login opens a visible browser window (recommended for connect flow) */
+  PLAYWRIGHT_LOGIN_HEADLESS: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
+  /** Max time to wait for 2FA / checkpoint completion in the visible browser */
+  PLAYWRIGHT_LOGIN_TIMEOUT_MS: z.coerce.number().default(180000),
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });

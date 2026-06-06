@@ -41,6 +41,15 @@ export class AccountController {
     sendSuccess(res, result, 'Account verification completed');
   });
 
+  login = asyncHandler(async (req: Request, res: Response) => {
+    const result = await accountService.loginAccount(req.params.id);
+    sendSuccess(
+      res,
+      result,
+      result.success ? 'Facebook account connected' : 'Facebook login did not complete',
+    );
+  });
+
   activate = asyncHandler(async (req: Request, res: Response) => {
     const account = await accountService.activate(req.params.id);
     sendSuccess(res, account, 'Account activated');

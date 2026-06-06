@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Shield, Trash2 } from 'lucide-react';
+import { Plus, Shield, Trash2, LogIn } from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { formatDate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -16,6 +16,8 @@ export function AccountsClient() {
   const [error, setError] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [connectMessage, setConnectMessage] = useState('');
   const [form, setForm] = useState({ email: '', password: '', displayName: '', dailyPostLimit: '5' });
 
   const load = useCallback(async () => {
@@ -54,6 +56,28 @@ export function AccountsClient() {
     }
   };
 
+  const handleConnect = async (id: string) => {
+    setConnectingId(id);
+    setConnectMessage('');
+    setError('');
+    try {
+      setConnectMessage('Opening browser — log in to Facebook and complete 2FA if prompted…');
+      const result = await api.accounts.login(id);
+      const success = Boolean(result.success);
+      setConnectMessage(
+        success
+          ? 'Facebook connected. Session saved — automation can use this account.'
+          : String(result.reason || 'Login did not complete'),
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Facebook login failed');
+      setConnectMessage('');
+    } finally {
+      setConnectingId(null);
+    }
+  };
+
   const columns = [
     { key: 'email', label: 'Email' },
     { key: 'displayName', label: 'Name', render: (r: Record<string, unknown>) => String(r.displayName || '—') },
@@ -79,7 +103,17 @@ export function AccountsClient() {
         <div className="flex gap-2">
           <Button
             size="sm"
+            variant="primary"
+            disabled={connectingId === String(r.id)}
+            onClick={() => handleConnect(String(r.id))}
+          >
+            <LogIn className="w-3 h-3" />
+            {connectingId === String(r.id) ? 'Connecting…' : 'Connect Facebook'}
+          </Button>
+          <Button
+            size="sm"
             variant="secondary"
+            disabled={!!connectingId}
             onClick={async () => {
               await api.accounts.verify(String(r.id));
               load();
@@ -106,6 +140,11 @@ export function AccountsClient() {
 
   return (
     <>
+      {connectMessage && (
+        <div className="mb-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg border border-blue-200">
+          {connectMessage}
+        </div>
+      )}
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">{error}</div>
       )}

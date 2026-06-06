@@ -18,13 +18,11 @@ import {
   InboxScrapeResult,
   InboxMessage,
   VerifyAccountResult,
+  FacebookLoginResult,
+  SessionRunOptions,
 } from './posting.types';
 
 type CredentialsWithAuth = PostingCredentials & { password?: string; email?: string };
-
-export interface SessionRunOptions {
-  onProxyFailure?: () => Promise<void>;
-}
 
 const FACEBOOK_URL = 'https://www.facebook.com';
 const MARKETPLACE_CREATE_URL = SELECTORS.marketplace.createListing;
@@ -41,9 +39,10 @@ export class PlaywrightEngine {
     };
   }
 
-  async launchBrowser(proxy?: ProxyConfig): Promise<Browser> {
+  async launchBrowser(proxy?: ProxyConfig, headless?: boolean): Promise<Browser> {
+    const useHeadless = headless ?? this.config.headless;
     const launchOptions: Parameters<typeof chromium.launch>[0] = {
-      headless: this.config.headless,
+      headless: useHeadless,
       slowMo: this.config.slowMo,
       args: [
         '--disable-blink-features=AutomationControlled',
@@ -69,7 +68,7 @@ export class PlaywrightEngine {
 
     logger.info(
       {
-        headless: this.config.headless,
+        headless: useHeadless,
         proxy: !!proxy,
         channel: env.PLAYWRIGHT_BROWSER_CHANNEL || 'chromium',
       },
@@ -78,8 +77,11 @@ export class PlaywrightEngine {
     return chromium.launch(launchOptions);
   }
 
-  async createSession(credentials: PostingCredentials): Promise<BrowserSession> {
-    const browser = await this.launchBrowser(credentials.proxy);
+  async createSession(
+    credentials: PostingCredentials,
+    options?: { headless?: boolean },
+  ): Promise<BrowserSession> {
+    const browser = await this.launchBrowser(credentials.proxy, options?.headless);
     const context = await browser.newContext({
       userAgent: credentials.userAgent,
       viewport: { width: 1366, height: 768 },
@@ -153,7 +155,10 @@ export class PlaywrightEngine {
           'Starting browser session',
         );
 
-        session = await this.createSession({ ...credentials, proxy: strategy.proxy });
+        session = await this.createSession(
+          { ...credentials, proxy: strategy.proxy },
+          { headless: options?.headless },
+        );
         return await operation(session);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -231,6 +236,208 @@ export class PlaywrightEngine {
 
     const health = await this.checkPageHealth(page);
     return health.isLoggedIn;
+  }
+
+  private isAwaitingManualAuth(url: string): boolean {
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('checkpoint') ||
+      lower.includes('two_step') ||
+      lower.includes('twofactor') ||
+      lower.includes('auth_platform') ||
+      lower.includes('/login/device-based') ||
+      lower.includes('approvals') ||
+      lower.includes('confirmemail')
+    );
+  }
+
+  private async waitForLoginCompletion(
+    page: Page,
+    maxWaitMs: number,
+  ): Promise<{ completed: boolean; manualAuth: boolean }> {
+    const start = Date.now();
+    let manualAuth = false;
+
+    while (Date.now() - start < maxWaitMs) {
+      const url = page.url();
+
+      if (this.isAwaitingManualAuth(url)) {
+        manualAuth = true;
+        logger.info({ url }, 'Complete 2FA or checkpoint in the browser window');
+        await page.waitForTimeout(3000);
+        continue;
+      }
+
+      const health = await this.checkPageHealth(page);
+      if (health.isLoggedIn) {
+        return { completed: true, manualAuth };
+      }
+
+      if (
+        health.status === AccountStatus.BANNED ||
+        health.status === AccountStatus.FLAGGED
+      ) {
+        return { completed: false, manualAuth };
+      }
+
+      await page.waitForTimeout(3000);
+    }
+
+    return { completed: false, manualAuth };
+  }
+
+  private async dismissPostLoginDialogs(page: Page): Promise<void> {
+    const dismissLabels = [
+      'Not Now',
+      'Not now',
+      'Skip',
+      'Close',
+      'OK',
+      'Allow all cookies',
+      'Accept All',
+    ];
+
+    for (const label of dismissLabels) {
+      const btn = page.getByRole('button', { name: label }).first();
+      if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await btn.click().catch(() => undefined);
+        await randomDelay(500, 1000);
+      }
+    }
+  }
+
+  async loginAccount(
+    credentials: CredentialsWithAuth,
+    callbacks?: SessionCallbacks,
+    sessionOptions?: SessionRunOptions,
+  ): Promise<FacebookLoginResult> {
+    if (!credentials.email || !credentials.password) {
+      return {
+        success: false,
+        status: AccountStatus.INACTIVE,
+        isLoggedIn: false,
+        reason: 'Account email and password are required for Facebook login',
+        loginMethod: 'playwright',
+      };
+    }
+
+    const usedProxy = !!credentials.proxy;
+    let proxyFallback = false;
+    const headless = sessionOptions?.headless ?? env.PLAYWRIGHT_LOGIN_HEADLESS;
+
+    try {
+      return await this.withResilientSession(
+        credentials,
+        async (session) => {
+          await this.navigateToFacebook(session.page);
+          let health = await this.checkPageHealth(session.page);
+          let manualAuthCompleted = false;
+
+          if (!health.isLoggedIn) {
+            if (this.isAwaitingManualAuth(session.page.url())) {
+              manualAuthCompleted = true;
+            } else {
+              logger.info(
+                { accountId: credentials.accountId, headless },
+                'Opening Facebook login — complete 2FA in the browser if prompted',
+              );
+              await this.loginWithCredentials(
+                session.page,
+                credentials.email!,
+                credentials.password!,
+              );
+            }
+
+            const wait = await this.waitForLoginCompletion(
+              session.page,
+              env.PLAYWRIGHT_LOGIN_TIMEOUT_MS,
+            );
+            manualAuthCompleted = manualAuthCompleted || wait.manualAuth;
+
+            if (!wait.completed) {
+              health = await this.checkPageHealth(session.page);
+              return {
+                success: false,
+                status: health.status,
+                isLoggedIn: false,
+                reason:
+                  manualAuthCompleted
+                    ? 'Login timed out waiting for 2FA or checkpoint — try again'
+                    : health.reason ?? 'Facebook login failed',
+                loginMethod: 'playwright',
+                manualAuthCompleted,
+                diagnostics: {
+                  facebookReachable: true,
+                  usedProxy,
+                  proxyFallback,
+                  facebookUrl: session.page.url(),
+                },
+              };
+            }
+          }
+
+          await this.dismissPostLoginDialogs(session.page);
+          health = await this.checkPageHealth(session.page);
+
+          const cookies = await session.context.cookies();
+          if (callbacks?.onCookiesUpdated && cookies.length > 0) {
+            await callbacks.onCookiesUpdated(cookies);
+          }
+          if (callbacks?.onAccountHealth) {
+            await callbacks.onAccountHealth(health);
+          }
+
+          return {
+            success:
+              health.isLoggedIn &&
+              health.status !== AccountStatus.BANNED &&
+              health.status !== AccountStatus.FLAGGED,
+            status: health.status,
+            isLoggedIn: health.isLoggedIn,
+            reason: health.reason,
+            cookiesSaved: cookies.length,
+            loginMethod: 'playwright',
+            manualAuthCompleted,
+            diagnostics: {
+              facebookReachable: true,
+              usedProxy,
+              proxyFallback,
+              facebookUrl: session.page.url(),
+            },
+          };
+        },
+        {
+          ...sessionOptions,
+          headless,
+          onProxyFailure: async () => {
+            proxyFallback = true;
+            if (sessionOptions?.onProxyFailure) {
+              await sessionOptions.onProxyFailure();
+            }
+          },
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Login failed';
+      const recommendation =
+        'Facebook is blocked or unreachable from this network. Add a working residential proxy (Proxies tab), assign it to the account, then connect again. Or set PLAYWRIGHT_GLOBAL_PROXY in .env.';
+
+      return {
+        success: false,
+        status: AccountStatus.INACTIVE,
+        isLoggedIn: false,
+        reason: isNetworkError(error)
+          ? `${recommendation} (Technical: ${message.split('\n')[0]})`
+          : message,
+        loginMethod: 'playwright',
+        diagnostics: {
+          facebookReachable: false,
+          usedProxy,
+          proxyFallback,
+          recommendation,
+        },
+      };
+    }
   }
 
   async ensureLoggedIn(

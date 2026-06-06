@@ -76,3 +76,19 @@ export interface VerifyAccountResult {
     recommendation?: string;
   };
 }
+
+export interface SessionRunOptions {
+  onProxyFailure?: () => Promise<void>;
+  headless?: boolean;
+}
+
+export interface FacebookLoginResult {
+  success: boolean;
+  status: string;
+  isLoggedIn: boolean;
+  reason?: string;
+  cookiesSaved?: number;
+  loginMethod: 'playwright';
+  manualAuthCompleted?: boolean;
+  diagnostics?: VerifyAccountResult['diagnostics'];
+}

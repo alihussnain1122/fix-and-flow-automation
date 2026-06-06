@@ -16,6 +16,7 @@ export function PostsClient() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ accountId: '', title: '', description: '', price: '' });
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,6 +72,39 @@ export function PostsClient() {
           <Input label="Title (optional — auto-rotate)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           <Textarea label="Description (optional — auto-rotate)" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           <Input label="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Images (optional)</label>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={async (e) => {
+                const files = Array.from(e.target.files || []);
+                const previews: string[] = [];
+                for (const f of files) {
+                  const data = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result));
+                    reader.onerror = reject;
+                    reader.readAsDataURL(f);
+                  });
+                  previews.push(data);
+                }
+                setImagePreviews(previews);
+                // attach to form via metadata property for submit
+                setForm({ ...form, imageUrls: previews } as any);
+              }}
+            />
+
+            {imagePreviews.length > 0 && (
+              <div className="mt-2 flex gap-2 flex-wrap">
+                {imagePreviews.map((src, i) => (
+                  <img key={i} src={src} className="w-20 h-20 object-cover rounded-md border" />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </Modal>
     </>

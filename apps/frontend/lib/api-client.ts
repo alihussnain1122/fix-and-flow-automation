@@ -42,6 +42,11 @@ export const api = {
       request<Record<string, unknown>>(`/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id: string) => request<null>(`/accounts/${id}`, { method: 'DELETE' }),
     verify: (id: string) => request<Record<string, unknown>>(`/accounts/${id}/verify`, { method: 'POST' }),
+    login: (id: string) =>
+      request<Record<string, unknown>>(`/accounts/${id}/login`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(300000),
+      }),
     activate: (id: string) => request<Record<string, unknown>>(`/accounts/${id}/activate`, { method: 'POST' }),
     assignProxy: (id: string, proxyId?: string) =>
       request<Record<string, unknown>>(`/accounts/${id}/assign-proxy`, {
