@@ -35,6 +35,22 @@ export class AccountController {
     await accountService.delete(req.params.id);
     sendSuccess(res, null, 'Account deleted successfully');
   });
+
+  verify = asyncHandler(async (req: Request, res: Response) => {
+    const result = await accountService.verifyAccount(req.params.id);
+    sendSuccess(res, result, 'Account verification completed');
+  });
+
+  activate = asyncHandler(async (req: Request, res: Response) => {
+    const account = await accountService.activate(req.params.id);
+    sendSuccess(res, account, 'Account activated');
+  });
+
+  assignProxy = asyncHandler(async (req: Request, res: Response) => {
+    const { proxyId } = req.body;
+    const account = await accountService.assignProxy(req.params.id, proxyId);
+    sendSuccess(res, account, 'Proxy assigned');
+  });
 }
 
 export const accountController = new AccountController();

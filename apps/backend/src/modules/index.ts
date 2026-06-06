@@ -8,6 +8,10 @@ import { inboxRoutes } from './inbox';
 import { analyticsRoutes } from './analytics';
 import { logRoutes } from './logs';
 
+import { cityRoutes } from './cities';
+import { leadRoutes } from './leads';
+import systemRoutes from './system/system.routes';
+
 const router = Router();
 
 router.use('/accounts', accountRoutes);
@@ -18,5 +22,8 @@ router.use('/schedules', schedulerRoutes);
 router.use('/inbox', inboxRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/logs', logRoutes);
+router.use('/cities', cityRoutes);
+router.use('/leads', leadRoutes);
+router.use('/system', systemRoutes);
 
 export default router;

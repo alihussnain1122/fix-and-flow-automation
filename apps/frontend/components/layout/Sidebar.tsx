@@ -11,6 +11,8 @@ import {
   Calendar,
   Inbox,
   BarChart3,
+  MapPin,
+  Phone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -21,6 +23,8 @@ const navigation = [
   { name: 'Proxies', href: '/proxies', icon: Globe },
   { name: 'Schedules', href: '/schedules', icon: Calendar },
   { name: 'Inbox', href: '/inbox', icon: Inbox },
+  { name: 'Cities', href: '/cities', icon: MapPin },
+  { name: 'Leads', href: '/leads', icon: Phone },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Logs', href: '/logs', icon: ScrollText },
 ];

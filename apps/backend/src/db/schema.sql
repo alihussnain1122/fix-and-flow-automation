@@ -1,4 +1,4 @@
--- Fix & Flow Database Schema
+-- Fix & Flow Database Schema (idempotent — safe to re-run)
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -53,9 +53,16 @@ CREATE TABLE IF NOT EXISTS accounts (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-ALTER TABLE proxies
-    ADD CONSTRAINT fk_proxies_assigned_account
-    FOREIGN KEY (assigned_account_id) REFERENCES accounts(id) ON DELETE SET NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_proxies_assigned_account'
+    ) THEN
+        ALTER TABLE proxies
+            ADD CONSTRAINT fk_proxies_assigned_account
+            FOREIGN KEY (assigned_account_id) REFERENCES accounts(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- Content Templates
 CREATE TABLE IF NOT EXISTS content_templates (
@@ -176,19 +183,34 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_accounts_updated_at ON accounts;
 CREATE TRIGGER update_accounts_updated_at BEFORE UPDATE ON accounts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_proxies_updated_at ON proxies;
 CREATE TRIGGER update_proxies_updated_at BEFORE UPDATE ON proxies
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_content_templates_updated_at ON content_templates;
 CREATE TRIGGER update_content_templates_updated_at BEFORE UPDATE ON content_templates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_posts_updated_at ON posts;
 CREATE TRIGGER update_posts_updated_at BEFORE UPDATE ON posts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_messages_updated_at ON messages;
 CREATE TRIGGER update_messages_updated_at BEFORE UPDATE ON messages
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_reply_templates_updated_at ON reply_templates;
 CREATE TRIGGER update_reply_templates_updated_at BEFORE UPDATE ON reply_templates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_schedules_updated_at ON schedules;
 CREATE TRIGGER update_schedules_updated_at BEFORE UPDATE ON schedules
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

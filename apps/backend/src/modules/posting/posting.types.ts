@@ -1,4 +1,5 @@
 import { Browser, BrowserContext, Page } from 'playwright';
+import { AccountHealthResult } from './account-health';
 
 export interface BrowserSession {
   browser: Browser;
@@ -14,6 +15,8 @@ export interface ProxyConfig {
 
 export interface PostingCredentials {
   accountId: string;
+  email?: string;
+  password?: string;
   cookies?: string;
   userAgent?: string;
   proxy?: ProxyConfig;
@@ -25,6 +28,7 @@ export interface ListingData {
   price: number | null;
   imageUrls: string[];
   category?: string;
+  city?: string;
 }
 
 export interface PostingResult {
@@ -38,4 +42,37 @@ export interface PlaywrightConfig {
   headless: boolean;
   slowMo: number;
   timeout: number;
+}
+
+export interface SessionCallbacks {
+  onCookiesUpdated?: (cookies: unknown[]) => Promise<void>;
+  onAccountHealth?: (health: AccountHealthResult) => Promise<void>;
+}
+
+export interface InboxMessage {
+  conversationId: string;
+  senderName: string;
+  content: string;
+  facebookMessageId?: string;
+}
+
+export interface InboxScrapeResult {
+  messages: InboxMessage[];
+  accountHealth: AccountHealthResult;
+  cookies?: unknown[];
+}
+
+export interface VerifyAccountResult {
+  success: boolean;
+  status: string;
+  isLoggedIn: boolean;
+  reason?: string;
+  cookies?: unknown[];
+  diagnostics?: {
+    facebookReachable?: boolean;
+    usedProxy?: boolean;
+    proxyFallback?: boolean;
+    facebookUrl?: string;
+    recommendation?: string;
+  };
 }

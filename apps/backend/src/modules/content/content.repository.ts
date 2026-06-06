@@ -66,18 +66,31 @@ export class ContentRepository {
     return result.rows[0] ?? null;
   }
 
-  async findNextForRotation(city?: string): Promise<ContentRow | null> {
+  async findNextForRotation(city?: string, accountId?: string): Promise<ContentRow | null> {
     const params: unknown[] = [];
+    let paramIndex = 1;
     let cityFilter = '';
+    let dedupFilter = '';
 
     if (city) {
-      cityFilter = 'AND (city = $1 OR city IS NULL)';
+      cityFilter = `AND (city = $${paramIndex} OR city IS NULL)`;
       params.push(city);
+      paramIndex++;
+    }
+
+    if (accountId) {
+      dedupFilter = `AND id NOT IN (
+        SELECT content_template_id FROM content_usage_log
+        WHERE account_id = $${paramIndex}
+        AND used_at > NOW() - INTERVAL '7 days'
+      )`;
+      params.push(accountId);
+      paramIndex++;
     }
 
     const result = await query<ContentRow>(
       `SELECT * FROM content_templates
-       WHERE is_active = true ${cityFilter}
+       WHERE is_active = true ${cityFilter} ${dedupFilter}
        ORDER BY usage_count ASC, last_used_at ASC NULLS FIRST
        LIMIT 1`,
       params,

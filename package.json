@@ -16,6 +16,7 @@
     "build:backend": "npm run build -w @fix-and-flow/backend",
     "build:frontend": "npm run build -w @fix-and-flow/frontend",
     "start": "npm run start -w @fix-and-flow/backend",
+    "start:pm2": "pm2 start ecosystem.config.cjs",
     "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\"",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",

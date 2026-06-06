@@ -40,6 +40,14 @@ const envSchema = z.object({
     .transform((v) => v === 'true')
     .default('true'),
   PLAYWRIGHT_SLOW_MO: z.coerce.number().default(0),
+  PLAYWRIGHT_NAV_RETRIES: z.coerce.number().default(3),
+  PLAYWRIGHT_NAV_TIMEOUT: z.coerce.number().default(60000),
+  PLAYWRIGHT_PROXY_FALLBACK: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('true'),
+  PLAYWRIGHT_BROWSER_CHANNEL: z.enum(['chrome', 'msedge', '']).default(''),
+  PLAYWRIGHT_GLOBAL_PROXY: z.string().optional(),
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });

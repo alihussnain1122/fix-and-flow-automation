@@ -1,15 +1,13 @@
-import { CreatePostDto, PostStatus } from '@fix-and-flow/types';
+import { AccountStatus, PostStatus } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
-import { parsePagination } from '@fix-and-flow/shared';
+import { parsePagination, MAX_RETRY_ATTEMPTS } from '@fix-and-flow/shared';
 import { logService } from '../../services/log.service';
 import { LogCategory, LogLevel } from '@fix-and-flow/types';
+import { credentialsService } from '../../services/credentials.service';
 import { accountService } from '../accounts/account.service';
-import { proxyService } from '../proxies/proxy.service';
 import { contentService } from '../content/content.service';
-import { decrypt } from '../../utils/encryption';
 import { postingRepository } from './posting.repository';
 import { playwrightEngine } from './playwright.engine';
-import { ListingData, PostingCredentials } from './posting.types';
 
 export class PostingService {
   async findAll(page?: number, limit?: number, filters?: { status?: string; accountId?: string }) {
@@ -23,13 +21,14 @@ export class PostingService {
     return postingRepository.mapRow(post);
   }
 
-  async create(dto: CreatePostDto) {
-    await accountService.findById(dto.accountId);
+  async create(dto: import('@fix-and-flow/types').CreatePostDto) {
+    const account = await accountService.findById(dto.accountId);
 
     let title = dto.title;
     let description = dto.description;
     let price = dto.price;
     let imageUrls = dto.imageUrls;
+    let city: string | undefined;
 
     if (dto.contentTemplateId) {
       const template = await contentService.findById(dto.contentTemplateId);
@@ -37,10 +36,14 @@ export class PostingService {
       description = description ?? template.description;
       price = price ?? template.price ?? undefined;
       imageUrls = imageUrls ?? template.imageUrls;
+      city = template.city ?? undefined;
     }
 
     if (!title || !description) {
-      const rotated = await contentService.rotateContent();
+      const rotated = await contentService.rotateContent(
+        account.metadata?.city as string,
+        dto.accountId,
+      );
       if (!rotated) throw new ValidationError('No content available for posting');
       title = title ?? rotated.title;
       description = description ?? rotated.description;
@@ -67,12 +70,11 @@ export class PostingService {
       postId: post.id,
     });
 
-    return post;
+    return { ...post, city };
   }
 
   async executePost(postId: string): Promise<void> {
     const post = await this.findById(postId);
-    const account = await accountService.findById(post.accountId);
 
     const canPost = await accountService.canPost(post.accountId);
     if (!canPost) {
@@ -81,15 +83,27 @@ export class PostingService {
 
     await postingRepository.update(postId, { status: PostStatus.IN_PROGRESS });
 
-    const credentials = await this.buildCredentials(post.accountId);
-    const listing: ListingData = {
+    const creds = await credentialsService.buildForAccount(post.accountId);
+    const listing = {
       title: post.title,
       description: post.description,
       price: post.price,
       imageUrls: post.imageUrls,
+      city: (post.metadata?.city as string) ?? undefined,
     };
 
-    const result = await playwrightEngine.createListing(credentials, listing);
+    const result = await playwrightEngine.createListing(creds, listing, {
+      onCookiesUpdated: async (cookies) => {
+        await credentialsService.saveCookiesFromSession(post.accountId, cookies);
+      },
+      onAccountHealth: async (health) => {
+        if (health.status === AccountStatus.BANNED) {
+          await accountService.markAsBanned(post.accountId, health.reason);
+        } else if (health.status === AccountStatus.FLAGGED) {
+          await accountService.markAsFlagged(post.accountId, health.reason);
+        }
+      },
+    });
 
     if (result.success) {
       await postingRepository.update(postId, {
@@ -103,13 +117,16 @@ export class PostingService {
       await logService.create({
         level: LogLevel.INFO,
         category: LogCategory.POSTING,
-        message: `Post published successfully`,
+        message: 'Post published successfully',
         accountId: post.accountId,
         postId,
       });
     } else {
+      const newStatus =
+        post.retryCount + 1 >= MAX_RETRY_ATTEMPTS ? PostStatus.FAILED : PostStatus.PENDING;
+
       await postingRepository.update(postId, {
-        status: PostStatus.FAILED,
+        status: newStatus,
         errorMessage: result.error,
         retryCount: post.retryCount + 1,
       });
@@ -124,42 +141,18 @@ export class PostingService {
     }
   }
 
-  private async buildCredentials(accountId: string): Promise<PostingCredentials> {
-    const account = await accountService.findById(accountId);
-    const cookies = await accountService.getDecryptedCookies(accountId);
-
-    let proxy;
-    if (account.proxyId) {
-      const proxyData = await proxyService.findById(account.proxyId);
-      proxy = {
-        server: proxyService.getProxyServerUrl(proxyData),
-        username: proxyData.username ?? undefined,
-        password: proxyData.passwordEncrypted
-          ? decrypt(proxyData.passwordEncrypted)
-          : undefined,
-      };
-    }
-
-    return {
-      accountId,
-      cookies: cookies ?? undefined,
-      userAgent: account.userAgent ?? undefined,
-      proxy,
-    };
-  }
-
   async runBasicInteraction(accountId?: string): Promise<void> {
-    const credentials = accountId
-      ? await this.buildCredentials(accountId)
+    const creds = accountId
+      ? await credentialsService.buildForAccount(accountId)
       : { accountId: 'test' };
 
-    await playwrightEngine.runBasicFacebookInteraction(credentials);
+    await playwrightEngine.runBasicFacebookInteraction(creds);
 
     await logService.create({
       level: LogLevel.INFO,
       category: LogCategory.PLAYWRIGHT,
       message: 'Basic Facebook interaction completed',
-      accountId: accountId,
+      accountId,
     });
   }
 }

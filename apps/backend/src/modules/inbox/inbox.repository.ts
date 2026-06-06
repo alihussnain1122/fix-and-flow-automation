@@ -77,6 +77,15 @@ export class InboxRepository {
     return result.rows[0] ?? null;
   }
 
+  async findByFacebookMessageId(facebookMessageId: string): Promise<MessageRow | null> {
+    if (!facebookMessageId) return null;
+    const result = await query<MessageRow>(
+      `SELECT * FROM messages WHERE facebook_message_id = $1`,
+      [facebookMessageId],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async createMessage(data: {
     accountId: string;
     conversationId: string;

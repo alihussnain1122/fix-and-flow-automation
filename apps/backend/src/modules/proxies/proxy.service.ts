@@ -2,8 +2,10 @@ import { CreateProxyDto, UpdateProxyDto, ProxyStatus } from '@fix-and-flow/types
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
 import { isValidPort, parsePagination } from '@fix-and-flow/shared';
 import { encrypt } from '../../utils/encryption';
+import { checkProxyConnectivity, checkFacebookReachability, buildProxyUrl } from '../../utils/network';
 import { logService } from '../../services/log.service';
 import { LogCategory, LogLevel } from '@fix-and-flow/types';
+import { accountService } from '../accounts/account.service';
 import { proxyRepository } from './proxy.repository';
 
 export class ProxyService {
@@ -70,8 +72,8 @@ export class ProxyService {
 
   async assignToAccount(proxyId: string, accountId: string) {
     const proxy = await this.findById(proxyId);
-    if (proxy.assignedAccountId) {
-      throw new ValidationError('Proxy is already assigned to an account');
+    if (proxy.assignedAccountId && proxy.assignedAccountId !== accountId) {
+      throw new ValidationError('Proxy is already assigned to another account');
     }
 
     return proxyRepository.update(proxyId, {
@@ -104,6 +106,83 @@ export class ProxyService {
 
   getProxyServerUrl(proxy: { host: string; port: number }): string {
     return `http://${proxy.host}:${proxy.port}`;
+  }
+
+  async healthCheck(id: string) {
+    const proxyRow = await proxyRepository.findById(id);
+    if (!proxyRow) throw new NotFoundError('Proxy', id);
+
+    const proxyUrl = buildProxyUrl(
+      proxyRow.host,
+      proxyRow.port,
+      proxyRow.username,
+      proxyRow.password_encrypted,
+    );
+
+    const [google, facebook] = await Promise.all([
+      checkProxyConnectivity(
+        proxyRow.host,
+        proxyRow.port,
+        proxyRow.username,
+        proxyRow.password_encrypted,
+      ),
+      checkFacebookReachability(proxyUrl),
+    ]);
+
+    const ok = google.ok && facebook.ok;
+
+    if (ok) {
+      await proxyRepository.update(id, {
+        lastCheckedAt: new Date(),
+        failureCount: 0,
+        status: ProxyStatus.ACTIVE,
+      });
+    } else {
+      await this.markFailed(id);
+    }
+
+    await logService.create({
+      level: ok ? LogLevel.INFO : LogLevel.WARN,
+      category: LogCategory.PROXY,
+      message: ok
+        ? 'Proxy health check passed (Google + Facebook)'
+        : `Proxy health check failed: ${facebook.error ?? google.error}`,
+      metadata: { proxyId: id, googleOk: google.ok, facebookOk: facebook.ok },
+    });
+
+    return {
+      ok,
+      latencyMs: facebook.latencyMs,
+      googleOk: google.ok,
+      facebookOk: facebook.ok,
+      error: facebook.error ?? google.error,
+    };
+  }
+
+  async rotateForAccount(accountId: string) {
+    const account = await accountService.findById(accountId);
+
+    if (account.proxyId) {
+      await this.releaseFromAccount(account.proxyId);
+    }
+
+    const newProxy = await this.getAvailableProxy();
+    if (!newProxy) {
+      throw new ValidationError('No available proxies for rotation');
+    }
+
+    await this.assignToAccount(newProxy.id, accountId);
+    await accountService.update(accountId, { proxyId: newProxy.id });
+
+    await logService.create({
+      level: LogLevel.INFO,
+      category: LogCategory.PROXY,
+      message: `Proxy rotated for account ${accountId}`,
+      accountId,
+      metadata: { newProxyId: newProxy.id },
+    });
+
+    return newProxy;
   }
 }
 

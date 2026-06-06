@@ -62,6 +62,30 @@ npm run dev
 docker compose up -d --build
 ```
 
+## Development Phases (Completed)
+
+| Phase | Scope | Status |
+|-------|--------|--------|
+| **1** | Backend, PostgreSQL, Redis, migrations, cities/leads schema, PM2 | ✅ |
+| **2** | Playwright posting (login, images, marketplace flow, ban detection) | ✅ |
+| **3** | Proxy assignment, health checks, rotation, account verification | ✅ |
+| **4** | BullMQ scheduler, daily reset, create-post jobs, retry logic | ✅ |
+| **5** | Inbox scraping, auto-reply, lead conversion from messages | ✅ |
+| **6** | Full admin dashboard with live CRUD for all modules | ✅ |
+
+## API Highlights
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /accounts/:id/verify` | Verify account via Playwright, save cookies |
+| `POST /accounts/:id/assign-proxy` | Assign or auto-assign proxy |
+| `POST /proxies/:id/health-check` | Test proxy connectivity |
+| `POST /proxies/rotate` | Rotate proxy for an account |
+| `POST /posts/:id/execute` | Run Playwright posting job |
+| `POST /inbox/check/:accountId` | Scrape inbox + auto-reply |
+| `POST /leads/:id/convert` | Mark lead as converted |
+| `GET /cities` | Manage target cities |
+
 ## Scripts
 
 | Script | Description |
@@ -70,7 +94,7 @@ docker compose up -d --build
 | `npm run dev:backend` | Start backend only |
 | `npm run dev:frontend` | Start frontend only |
 | `npm run build` | Build all packages |
-| `npm run start` | Start production backend |
+| `npm run start:pm2` | Start backend with PM2 (production) |
 | `npm run db:migrate` | Run database migrations |
 | `npm run lint` | Run ESLint |
 | `npm run format` | Format code with Prettier |

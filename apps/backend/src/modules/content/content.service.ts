@@ -1,6 +1,7 @@
 import { CreateContentDto, UpdateContentDto, ContentRotationResult } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
 import { parsePagination } from '@fix-and-flow/shared';
+import { query } from '../../config/database';
 import { contentRepository } from './content.repository';
 
 export class ContentService {
@@ -51,8 +52,8 @@ export class ContentService {
     return contentRepository.delete(id);
   }
 
-  async rotateContent(city?: string): Promise<ContentRotationResult | null> {
-    const template = await contentRepository.findNextForRotation(city);
+  async rotateContent(city?: string, accountId?: string): Promise<ContentRotationResult | null> {
+    const template = await contentRepository.findNextForRotation(city, accountId);
     if (!template) return null;
 
     const mapped = contentRepository.mapRow(template);
@@ -61,6 +62,13 @@ export class ContentService {
       usageCount: mapped.usageCount + 1,
       lastUsedAt: new Date(),
     });
+
+    if (accountId) {
+      await query(
+        `INSERT INTO content_usage_log (content_template_id, account_id) VALUES ($1, $2)`,
+        [template.id, accountId],
+      );
+    }
 
     return {
       templateId: mapped.id,

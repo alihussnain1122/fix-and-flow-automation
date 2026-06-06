@@ -1,9 +1,12 @@
-import { MessageStatus, CreateReplyTemplateDto } from '@fix-and-flow/types';
+import { MessageStatus, CreateReplyTemplateDto, AccountStatus } from '@fix-and-flow/types';
 import { NotFoundError } from '@fix-and-flow/shared';
 import { parsePagination } from '@fix-and-flow/shared';
 import { logService } from '../../services/log.service';
 import { LogCategory, LogLevel } from '@fix-and-flow/types';
+import { credentialsService } from '../../services/credentials.service';
 import { accountService } from '../accounts/account.service';
+import { playwrightEngine } from '../posting/playwright.engine';
+import { leadService } from '../leads/lead.service';
 import { inboxRepository } from './inbox.repository';
 
 export class InboxService {
@@ -24,16 +27,87 @@ export class InboxService {
 
   async checkInbox(accountId: string): Promise<number> {
     await accountService.findById(accountId);
+    const creds = await credentialsService.buildForAccount(accountId);
 
-    // Placeholder for Playwright inbox scraping — will be extended in Phase 5
+    const scrapeResult = await playwrightEngine.scrapeInbox(creds, {
+      onCookiesUpdated: async (cookies) => {
+        await credentialsService.saveCookiesFromSession(accountId, cookies);
+      },
+      onAccountHealth: async (health) => {
+        if (health.status === AccountStatus.BANNED) {
+          await accountService.markAsBanned(accountId, health.reason);
+        } else if (health.status === AccountStatus.FLAGGED) {
+          await accountService.markAsFlagged(accountId, health.reason);
+        }
+      },
+    });
+
+    let newCount = 0;
+
+    for (const msg of scrapeResult.messages) {
+      const existing = await inboxRepository.findByFacebookMessageId(msg.facebookMessageId ?? '');
+      if (existing) continue;
+
+      const saved = await inboxRepository.createMessage({
+        accountId,
+        conversationId: msg.conversationId,
+        senderName: msg.senderName,
+        content: msg.content,
+        facebookMessageId: msg.facebookMessageId,
+      });
+
+      newCount++;
+
+      const autoReply = await this.generateAutoReply();
+      if (autoReply) {
+        const sent = await playwrightEngine.sendInboxReply(
+          creds,
+          msg.conversationId,
+          autoReply.content,
+          {
+            onCookiesUpdated: async (cookies) => {
+              await credentialsService.saveCookiesFromSession(accountId, cookies);
+            },
+          },
+        );
+
+        if (sent) {
+          await this.sendAutoReply(saved.id, autoReply.templateId, autoReply.content);
+          await this.tryConvertToLead(saved.id, accountId, msg);
+        }
+      }
+    }
+
     await logService.create({
       level: LogLevel.INFO,
       category: LogCategory.INBOX,
-      message: `Inbox check initiated for account ${accountId}`,
+      message: `Inbox check completed: ${newCount} new messages`,
       accountId,
+      metadata: { newCount, totalScraped: scrapeResult.messages.length },
     });
 
-    return 0;
+    return newCount;
+  }
+
+  private async tryConvertToLead(
+    messageId: string,
+    accountId: string,
+    msg: { conversationId: string; senderName: string; content: string },
+  ) {
+    const phoneMatch = msg.content.match(/(\+?\d[\d\s\-().]{8,}\d)/);
+    const emailMatch = msg.content.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+
+    if (phoneMatch || emailMatch) {
+      await leadService.create({
+        accountId,
+        messageId,
+        conversationId: msg.conversationId,
+        contactName: msg.senderName,
+        phone: phoneMatch?.[1]?.replace(/\s/g, ''),
+        email: emailMatch?.[0],
+        notes: `Auto-detected from inbox: "${msg.content.slice(0, 100)}"`,
+      });
+    }
   }
 
   async processInboundMessage(data: {

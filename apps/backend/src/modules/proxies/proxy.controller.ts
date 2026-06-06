@@ -35,6 +35,17 @@ export class ProxyController {
     await proxyService.delete(req.params.id);
     sendSuccess(res, null, 'Proxy deleted successfully');
   });
+
+  healthCheck = asyncHandler(async (req: Request, res: Response) => {
+    const result = await proxyService.healthCheck(req.params.id);
+    sendSuccess(res, result, 'Health check completed');
+  });
+
+  rotate = asyncHandler(async (req: Request, res: Response) => {
+    const { accountId } = req.body;
+    const proxy = await proxyService.rotateForAccount(accountId);
+    sendSuccess(res, proxy, 'Proxy rotated');
+  });
 }
 
 export const proxyController = new ProxyController();
