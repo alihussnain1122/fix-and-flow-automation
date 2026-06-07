@@ -56,6 +56,9 @@ const envSchema = z.object({
   /** Max time to wait for 2FA / checkpoint completion in the visible browser */
   PLAYWRIGHT_LOGIN_TIMEOUT_MS: z.coerce.number().default(180000),
 
+  TWOCAPTCHA_API_KEY: z.string().optional(),
+  CAPSOLVER_API_KEY: z.string().optional(),
+
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 

@@ -5,6 +5,17 @@ import { logger } from '../../config/logger';
 import { randomDelay, simulateTyping } from '../../utils/human-behavior';
 import { downloadImageToTemp, cleanupTempFiles } from '../../utils/network';
 import { gotoWithRetry, gotoFacebookWithFallback, isNetworkError, isProxyNetworkError } from '../../utils/playwright-navigation';
+import {
+  isExecutionContextDestroyedError,
+  waitForPageStable,
+  waitForPostSubmitNavigation,
+} from '../../utils/playwright-page-stable';
+import {
+  detectCaptcha,
+  getConfiguredCaptchaService,
+  resolveCaptchaOnPage,
+  solveLoginCaptchaWithCaptchaTs,
+} from '../../services/captcha.integration';
 import { SELECTORS } from './marketplace.selectors';
 import { detectAccountHealth, AccountHealthResult } from './account-health';
 import {
@@ -118,6 +129,7 @@ export class PlaywrightEngine {
   }
 
   async checkPageHealth(page: Page): Promise<AccountHealthResult> {
+    await waitForPageStable(page, { timeoutMs: 8_000 }).catch(() => undefined);
     const text = await page.locator('body').innerText().catch(() => '');
     return detectAccountHealth(text, page.url());
   }
@@ -222,20 +234,109 @@ export class PlaywrightEngine {
     }, password);
     await randomDelay(1000, 2000);
 
-    const loginButton = page.locator(SELECTORS.login.loginButton).first();
-    const canClickLogin = await loginButton.isVisible({ timeout: 4000 }).catch(() => false);
+    await this.clickLoginSubmit(page);
+    await waitForPostSubmitNavigation(page);
 
-    if (canClickLogin) {
-      await loginButton.click();
-    } else {
-      logger.warn('Login button not found with known selectors; submitting with Enter key');
-      await passInput.press('Enter');
+    for (let round = 0; round < 2; round++) {
+      const captchaOk = await this.solveLoginCaptcha(page);
+      if (!captchaOk) break;
+
+      if (!page.url().includes('/login')) break;
+
+      const midHealth = await this.checkPageHealth(page);
+      if (midHealth.isLoggedIn) break;
+
+      logger.info('Re-submitting login after captcha was solved');
+      await waitForPageStable(page);
+      await this.clickLoginSubmit(page);
+      await waitForPostSubmitNavigation(page);
     }
 
-    await randomDelay(5000, 8000);
+    await waitForPageStable(page);
 
     const health = await this.checkPageHealth(page);
     return health.isLoggedIn;
+  }
+
+  private async clickLoginSubmit(page: Page): Promise<void> {
+    const loginButton = page.locator(SELECTORS.login.loginButton).first();
+    const passInput = page.locator(SELECTORS.login.passwordInput).first();
+
+    if (await loginButton.isVisible({ timeout: 4000 }).catch(() => false)) {
+      await loginButton.click();
+      return;
+    }
+
+    logger.warn('Login button not found with known selectors; submitting with Enter key');
+    await passInput.press('Enter');
+  }
+
+  /** Wait for reCAPTCHA, click "I'm not a robot", solve grid via root captcha.ts */
+  private async solveLoginCaptcha(page: Page): Promise<boolean> {
+    logger.info('Checking for reCAPTCHA (I\'m not a robot) after login submit');
+
+    try {
+      const { captchaFound, solved, type } = await solveLoginCaptchaWithCaptchaTs(page);
+
+      if (!captchaFound) {
+        return true;
+      }
+
+      if (solved) {
+        logger.info({ type }, 'Captcha solved via captcha.ts (checkbox + grid)');
+        await waitForPageStable(page);
+        return true;
+      }
+
+      if (!getConfiguredCaptchaService()) {
+        logger.warn('reCAPTCHA appeared — set TWOCAPTCHA_API_KEY in .env to auto-solve');
+      } else {
+        logger.warn({ type }, 'reCAPTCHA appeared but captcha.ts could not solve it');
+      }
+      return false;
+    } catch (error) {
+      if (isExecutionContextDestroyedError(error)) {
+        logger.warn('Captcha solve interrupted by navigation — will retry');
+        return true;
+      }
+      logger.error({ error }, 'Login captcha solve failed');
+      return false;
+    }
+  }
+
+  private async resolveCaptchaIfPresent(page: Page): Promise<boolean> {
+    try {
+      await waitForPageStable(page);
+      const detection = await detectCaptcha(page);
+      if (!detection.present) return true;
+
+      logger.info(
+        { type: detection.type, siteKey: detection.siteKey?.slice(0, 8) },
+        'Captcha detected — attempting automatic resolution',
+      );
+
+      const service = getConfiguredCaptchaService();
+      if (!service) {
+        logger.warn('Captcha detected but TWOCAPTCHA_API_KEY / CAPSOLVER_API_KEY not configured');
+        return false;
+      }
+
+      const solved = await resolveCaptchaOnPage(page, service, detection);
+      if (solved) {
+        logger.info({ type: detection.type }, 'Captcha resolved successfully');
+      } else {
+        logger.warn({ type: detection.type }, 'Captcha resolution failed');
+      }
+      return solved;
+    } catch (error) {
+      if (isExecutionContextDestroyedError(error)) {
+        logger.warn('Captcha check interrupted by navigation — will retry on next pass');
+        return true;
+      }
+
+      logger.error({ error }, 'Captcha resolution error');
+      return false;
+    }
   }
 
   private isAwaitingManualAuth(url: string): boolean {
@@ -268,7 +369,24 @@ export class PlaywrightEngine {
         continue;
       }
 
-      const health = await this.checkPageHealth(page);
+      try {
+        await waitForPageStable(page, { timeoutMs: 8_000 });
+      } catch {
+        /* keep polling */
+      }
+
+      await this.resolveCaptchaIfPresent(page);
+
+      let health: AccountHealthResult;
+      try {
+        health = await this.checkPageHealth(page);
+      } catch (error) {
+        if (isExecutionContextDestroyedError(error)) {
+          await page.waitForTimeout(2000);
+          continue;
+        }
+        throw error;
+      }
       if (health.isLoggedIn) {
         return { completed: true, manualAuth };
       }
@@ -422,13 +540,18 @@ export class PlaywrightEngine {
       const recommendation =
         'Facebook is blocked or unreachable from this network. Add a working residential proxy (Proxies tab), assign it to the account, then connect again. Or set PLAYWRIGHT_GLOBAL_PROXY in .env.';
 
+      const navigationHint =
+        'Facebook redirected while automation was running. Wait for the browser to finish loading, then click Connect Facebook again.';
+
       return {
         success: false,
         status: AccountStatus.INACTIVE,
         isLoggedIn: false,
-        reason: isNetworkError(error)
-          ? `${recommendation} (Technical: ${message.split('\n')[0]})`
-          : message,
+        reason: isExecutionContextDestroyedError(error)
+          ? navigationHint
+          : isNetworkError(error)
+            ? `${recommendation} (Technical: ${message.split('\n')[0]})`
+            : message,
         loginMethod: 'playwright',
         diagnostics: {
           facebookReachable: false,
