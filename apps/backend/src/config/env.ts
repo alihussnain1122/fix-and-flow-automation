@@ -54,10 +54,23 @@ const envSchema = z.object({
     .transform((v) => v === 'true')
     .default('false'),
   /** Max time to wait for 2FA / checkpoint completion in the visible browser */
-  PLAYWRIGHT_LOGIN_TIMEOUT_MS: z.coerce.number().default(180000),
+  PLAYWRIGHT_LOGIN_TIMEOUT_MS: z.coerce.number().default(300000),
+  /** Max captcha solve rounds per login (Facebook may show several in a row) */
+  PLAYWRIGHT_CAPTCHA_MAX_ROUNDS: z.coerce.number().default(15),
+  /** After a captcha solve, wait this long and re-check before assuming done */
+  PLAYWRIGHT_CAPTCHA_CLEAR_MS: z.coerce.number().default(6000),
+  /** Use playwright-extra + puppeteer-extra-plugin-stealth */
+  PLAYWRIGHT_USE_STEALTH: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('true'),
+  /** Dedicated captcha debug log file path */
+  CAPTCHA_LOG_PATH: z.string().default('logs/captcha.log'),
 
   TWOCAPTCHA_API_KEY: z.string().optional(),
   CAPSOLVER_API_KEY: z.string().optional(),
+  /** manual = you solve in browser; auto = captcha.ts + 2captcha (default when API key set) */
+  PLAYWRIGHT_CAPTCHA_MODE: z.enum(['manual', 'auto']).optional(),
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });

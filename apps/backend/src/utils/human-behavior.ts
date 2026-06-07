@@ -32,5 +32,29 @@ export async function simulateTyping(
   for (const char of text) {
     await typeFn(char);
     await new Promise((resolve) => setTimeout(resolve, randomTypingDelay()));
+    if (Math.random() < 0.1) {
+      await randomDelay(120, 380);
+    }
   }
+}
+
+/** Human-like credential entry: click field, then keyboard.type (not fill). */
+export async function humanTypeInput(
+  page: import('playwright').Page,
+  locator: import('playwright').Locator,
+  text: string,
+): Promise<void> {
+  await randomDelay(500, 1400);
+  await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+  await locator.click({ delay: randomBetween(60, 180) });
+  await randomDelay(350, 900);
+
+  for (const char of text) {
+    await page.keyboard.type(char, { delay: randomTypingDelay() });
+    if (Math.random() < 0.12) {
+      await randomDelay(180, 520);
+    }
+  }
+
+  await randomDelay(600, 1600);
 }

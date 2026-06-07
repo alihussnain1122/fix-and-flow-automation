@@ -1,8 +1,9 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { AccountStatus } from '@fix-and-flow/types';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
-import { randomDelay, simulateTyping } from '../../utils/human-behavior';
+import { humanTypeInput, randomDelay, simulateTyping } from '../../utils/human-behavior';
+import { launchStealthBrowser } from '../../utils/playwright-browser';
 import { downloadImageToTemp, cleanupTempFiles } from '../../utils/network';
 import { gotoWithRetry, gotoFacebookWithFallback, isNetworkError, isProxyNetworkError } from '../../utils/playwright-navigation';
 import {
@@ -12,10 +13,13 @@ import {
 } from '../../utils/playwright-page-stable';
 import {
   detectCaptcha,
+  getCaptchaMode,
   getConfiguredCaptchaService,
+  handleLoginCaptchaStep,
+  resolveAllLoginCaptchas,
   resolveCaptchaOnPage,
-  solveLoginCaptchaWithCaptchaTs,
 } from '../../services/captcha.integration';
+import { captchaLogger, getCaptchaLogPath } from '../../config/captcha.logger';
 import { SELECTORS } from './marketplace.selectors';
 import { detectAccountHealth, AccountHealthResult } from './account-health';
 import {
@@ -52,7 +56,7 @@ export class PlaywrightEngine {
 
   async launchBrowser(proxy?: ProxyConfig, headless?: boolean): Promise<Browser> {
     const useHeadless = headless ?? this.config.headless;
-    const launchOptions: Parameters<typeof chromium.launch>[0] = {
+    const launchOptions: Parameters<typeof launchStealthBrowser>[0] = {
       headless: useHeadless,
       slowMo: this.config.slowMo,
       args: [
@@ -60,8 +64,6 @@ export class PlaywrightEngine {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-http2',
-        '--disable-quic',
       ],
     };
 
@@ -82,10 +84,11 @@ export class PlaywrightEngine {
         headless: useHeadless,
         proxy: !!proxy,
         channel: env.PLAYWRIGHT_BROWSER_CHANNEL || 'chromium',
+        stealth: env.PLAYWRIGHT_USE_STEALTH,
       },
       'Launching browser',
     );
-    return chromium.launch(launchOptions);
+    return launchStealthBrowser(launchOptions);
   }
 
   async createSession(
@@ -210,51 +213,61 @@ export class PlaywrightEngine {
     page: Page,
     email: string,
     password: string,
+    accountId?: string,
   ): Promise<boolean> {
-    logger.info({ email }, 'Attempting Facebook login');
+    logger.info({ email, accountId, captchaMode: getCaptchaMode() }, 'Attempting Facebook login');
+    captchaLogger.info({ accountId, email, captchaMode: getCaptchaMode() }, '=== Facebook login started ===');
+
     await gotoWithRetry(page, `${FACEBOOK_URL}/login`);
-    await randomDelay(2000, 4000);
+    await randomDelay(2500, 5000);
+    await this.simulateHumanInteraction(page);
 
     const emailInput = page.locator(SELECTORS.login.emailInput).first();
     const passInput = page.locator(SELECTORS.login.passwordInput).first();
 
     if (!(await emailInput.isVisible({ timeout: 10000 }).catch(() => false))) {
+      captchaLogger.error({ accountId }, 'Login form not visible');
       return false;
     }
 
-    await emailInput.click();
-    await simulateTyping(async (char) => {
-      await emailInput.pressSequentially(char, { delay: 0 });
-    }, email);
-    await randomDelay(800, 1500);
+    captchaLogger.info({ accountId }, 'Typing email with human keyboard input');
+    await humanTypeInput(page, emailInput, email);
+    await randomDelay(900, 2200);
 
-    await passInput.click();
-    await simulateTyping(async (char) => {
-      await passInput.pressSequentially(char, { delay: 0 });
-    }, password);
-    await randomDelay(1000, 2000);
+    captchaLogger.info({ accountId }, 'Typing password with human keyboard input');
+    await humanTypeInput(page, passInput, password);
+    await randomDelay(1200, 2800);
+
+    await this.simulateHumanInteraction(page);
+    await randomDelay(800, 1800);
 
     await this.clickLoginSubmit(page);
     await waitForPostSubmitNavigation(page);
 
-    for (let round = 0; round < 2; round++) {
-      const captchaOk = await this.solveLoginCaptcha(page);
-      if (!captchaOk) break;
+    const captchaLoop = await resolveAllLoginCaptchas(page, {
+      timeoutMs: env.PLAYWRIGHT_LOGIN_TIMEOUT_MS,
+      maxRounds: env.PLAYWRIGHT_CAPTCHA_MAX_ROUNDS,
+      accountId,
+      isLoggedIn: async () => (await this.checkPageHealth(page)).isLoggedIn,
+      resubmitLogin: async () => {
+        await this.clickLoginSubmit(page);
+        await waitForPostSubmitNavigation(page);
+      },
+    });
 
-      if (!page.url().includes('/login')) break;
-
-      const midHealth = await this.checkPageHealth(page);
-      if (midHealth.isLoggedIn) break;
-
-      logger.info('Re-submitting login after captcha was solved');
-      await waitForPageStable(page);
-      await this.clickLoginSubmit(page);
-      await waitForPostSubmitNavigation(page);
+    if (!captchaLoop.allSolved && captchaLoop.rounds > 0) {
+      captchaLogger.error(
+        { accountId, rounds: captchaLoop.rounds, lastError: captchaLoop.lastError },
+        'Captcha loop did not complete — see captcha.log',
+      );
     }
 
     await waitForPageStable(page);
-
     const health = await this.checkPageHealth(page);
+    captchaLogger.info(
+      { accountId, isLoggedIn: health.isLoggedIn, captchaRounds: captchaLoop.rounds },
+      '=== Facebook login credentials step finished ===',
+    );
     return health.isLoggedIn;
   }
 
@@ -271,70 +284,44 @@ export class PlaywrightEngine {
     await passInput.press('Enter');
   }
 
-  /** Wait for reCAPTCHA, click "I'm not a robot", solve grid via root captcha.ts */
-  private async solveLoginCaptcha(page: Page): Promise<boolean> {
-    logger.info('Checking for reCAPTCHA (I\'m not a robot) after login submit');
-
-    try {
-      const { captchaFound, solved, type } = await solveLoginCaptchaWithCaptchaTs(page);
-
-      if (!captchaFound) {
-        return true;
+  private async resolveCaptchaIfPresent(page: Page, accountId?: string): Promise<boolean> {
+    if (getCaptchaMode() === 'manual') {
+      const detection = await detectCaptcha(page).catch(() => ({
+        present: false,
+        type: 'none' as const,
+      }));
+      if (detection.present) {
+        captchaLogger.debug({ accountId }, 'Captcha visible — manual mode, waiting for user');
       }
-
-      if (solved) {
-        logger.info({ type }, 'Captcha solved via captcha.ts (checkbox + grid)');
-        await waitForPageStable(page);
-        return true;
-      }
-
-      if (!getConfiguredCaptchaService()) {
-        logger.warn('reCAPTCHA appeared — set TWOCAPTCHA_API_KEY in .env to auto-solve');
-      } else {
-        logger.warn({ type }, 'reCAPTCHA appeared but captcha.ts could not solve it');
-      }
-      return false;
-    } catch (error) {
-      if (isExecutionContextDestroyedError(error)) {
-        logger.warn('Captcha solve interrupted by navigation — will retry');
-        return true;
-      }
-      logger.error({ error }, 'Login captcha solve failed');
-      return false;
+      return true;
     }
-  }
 
-  private async resolveCaptchaIfPresent(page: Page): Promise<boolean> {
     try {
       await waitForPageStable(page);
       const detection = await detectCaptcha(page);
       if (!detection.present) return true;
 
-      logger.info(
-        { type: detection.type, siteKey: detection.siteKey?.slice(0, 8) },
-        'Captcha detected — attempting automatic resolution',
+      captchaLogger.info(
+        { accountId, type: detection.type, siteKey: detection.siteKey?.slice(0, 8) },
+        'Auto-solving captcha via captcha.ts',
       );
 
       const service = getConfiguredCaptchaService();
       if (!service) {
-        logger.warn('Captcha detected but TWOCAPTCHA_API_KEY / CAPSOLVER_API_KEY not configured');
+        captchaLogger.warn({ accountId }, 'No TWOCAPTCHA_API_KEY — cannot auto-solve');
         return false;
       }
 
       const solved = await resolveCaptchaOnPage(page, service, detection);
-      if (solved) {
-        logger.info({ type: detection.type }, 'Captcha resolved successfully');
-      } else {
-        logger.warn({ type: detection.type }, 'Captcha resolution failed');
-      }
+      captchaLogger.info({ accountId, solved, type: detection.type }, 'resolveCaptchaOnPage result');
       return solved;
     } catch (error) {
       if (isExecutionContextDestroyedError(error)) {
-        logger.warn('Captcha check interrupted by navigation — will retry on next pass');
+        captchaLogger.debug({ accountId }, 'Captcha check interrupted by navigation');
         return true;
       }
 
-      logger.error({ error }, 'Captcha resolution error');
+      captchaLogger.error({ accountId, error }, 'Captcha resolution error');
       return false;
     }
   }
@@ -355,15 +342,41 @@ export class PlaywrightEngine {
   private async waitForLoginCompletion(
     page: Page,
     maxWaitMs: number,
-  ): Promise<{ completed: boolean; manualAuth: boolean }> {
+    accountId?: string,
+  ): Promise<{ completed: boolean; manualAuth: boolean; captchaRounds: number }> {
     const start = Date.now();
     let manualAuth = false;
+    let captchaRounds = 0;
 
     while (Date.now() - start < maxWaitMs) {
       const url = page.url();
 
       if (this.isAwaitingManualAuth(url)) {
+        const captchaOnPage = await detectCaptcha(page).catch(() => ({
+          present: false,
+          type: 'none' as const,
+        }));
+
+        if (captchaOnPage.present && getCaptchaMode() === 'auto') {
+          captchaRounds++;
+          captchaLogger.info(
+            { accountId, round: captchaRounds, url },
+            'Captcha on checkpoint/login page — auto-solving',
+          );
+          const step = await handleLoginCaptchaStep(page, {
+            timeoutMs: Math.min(120_000, maxWaitMs - (Date.now() - start)),
+            isLoggedIn: async () => (await this.checkPageHealth(page)).isLoggedIn,
+            accountId,
+            round: captchaRounds,
+          });
+          if (!step.solved) {
+            captchaLogger.warn({ accountId, round: captchaRounds }, 'Auto captcha failed during auth wait');
+          }
+          continue;
+        }
+
         manualAuth = true;
+        captchaLogger.info({ accountId, url }, 'Waiting for 2FA / checkpoint in browser');
         logger.info({ url }, 'Complete 2FA or checkpoint in the browser window');
         await page.waitForTimeout(3000);
         continue;
@@ -375,7 +388,7 @@ export class PlaywrightEngine {
         /* keep polling */
       }
 
-      await this.resolveCaptchaIfPresent(page);
+      await this.resolveCaptchaIfPresent(page, accountId);
 
       let health: AccountHealthResult;
       try {
@@ -388,20 +401,25 @@ export class PlaywrightEngine {
         throw error;
       }
       if (health.isLoggedIn) {
-        return { completed: true, manualAuth };
+        captchaLogger.info({ accountId, captchaRounds }, 'Login completion — success');
+        return { completed: true, manualAuth, captchaRounds };
       }
 
       if (
         health.status === AccountStatus.BANNED ||
         health.status === AccountStatus.FLAGGED
       ) {
-        return { completed: false, manualAuth };
+        return { completed: false, manualAuth, captchaRounds };
       }
 
       await page.waitForTimeout(3000);
     }
 
-    return { completed: false, manualAuth };
+    captchaLogger.warn(
+      { accountId, manualAuth, captchaRounds, elapsedMs: Date.now() - start },
+      'Login completion timed out',
+    );
+    return { completed: false, manualAuth, captchaRounds };
   }
 
   private async dismissPostLoginDialogs(page: Page): Promise<void> {
@@ -452,38 +470,62 @@ export class PlaywrightEngine {
           let manualAuthCompleted = false;
 
           if (!health.isLoggedIn) {
+            const loginStart = Date.now();
+
             if (this.isAwaitingManualAuth(session.page.url())) {
               manualAuthCompleted = true;
             } else {
               logger.info(
-                { accountId: credentials.accountId, headless },
-                'Opening Facebook login — complete 2FA in the browser if prompted',
+                {
+                  accountId: credentials.accountId,
+                  headless,
+                  captchaMode: getCaptchaMode(),
+                  captchaLog: getCaptchaLogPath(),
+                },
+                'Opening Facebook login — captcha auto-solve via captcha.ts when API key set',
               );
               await this.loginWithCredentials(
                 session.page,
                 credentials.email!,
                 credentials.password!,
+                credentials.accountId,
               );
             }
 
+            const elapsed = Date.now() - loginStart;
+            const remainingMs = Math.max(60_000, env.PLAYWRIGHT_LOGIN_TIMEOUT_MS - elapsed);
+
             const wait = await this.waitForLoginCompletion(
               session.page,
-              env.PLAYWRIGHT_LOGIN_TIMEOUT_MS,
+              remainingMs,
+              credentials.accountId,
             );
             manualAuthCompleted = manualAuthCompleted || wait.manualAuth;
 
             if (!wait.completed) {
               health = await this.checkPageHealth(session.page);
+              const captchaMode = getCaptchaMode();
+              const logHint = `See ${getCaptchaLogPath()} for captcha details`;
+
+              let reason: string;
+              if (wait.captchaRounds > 0 && captchaMode === 'auto') {
+                reason = `Captcha auto-solve did not finish (${wait.captchaRounds} round(s)). ${logHint}`;
+              } else if (manualAuthCompleted) {
+                reason = `Login timed out waiting for 2FA or checkpoint. ${logHint}`;
+              } else if (captchaMode === 'manual') {
+                reason = `Login timed out — solve captcha in the browser. ${logHint}`;
+              } else {
+                reason = health.reason ?? `Facebook login failed. ${logHint}`;
+              }
+
               return {
                 success: false,
                 status: health.status,
                 isLoggedIn: false,
-                reason:
-                  manualAuthCompleted
-                    ? 'Login timed out waiting for 2FA or checkpoint — try again'
-                    : health.reason ?? 'Facebook login failed',
+                reason,
                 loginMethod: 'playwright',
                 manualAuthCompleted,
+                captchaMode,
                 diagnostics: {
                   facebookReachable: true,
                   usedProxy,
@@ -516,6 +558,7 @@ export class PlaywrightEngine {
             cookiesSaved: cookies.length,
             loginMethod: 'playwright',
             manualAuthCompleted,
+            captchaMode: getCaptchaMode(),
             diagnostics: {
               facebookReachable: true,
               usedProxy,

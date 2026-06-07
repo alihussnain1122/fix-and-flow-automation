@@ -90,5 +90,7 @@ export interface FacebookLoginResult {
   cookiesSaved?: number;
   loginMethod: 'playwright';
   manualAuthCompleted?: boolean;
+  manualCaptchaCompleted?: boolean;
+  captchaMode?: 'manual' | 'auto';
   diagnostics?: VerifyAccountResult['diagnostics'];
 }

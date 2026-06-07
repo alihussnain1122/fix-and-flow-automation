@@ -61,7 +61,9 @@ export function AccountsClient() {
     setConnectMessage('');
     setError('');
     try {
-      setConnectMessage('Opening browser — log in to Facebook and complete 2FA if prompted…');
+      setConnectMessage(
+        'Browser opening — credentials filled automatically. Captchas are solved via 2captcha (see logs/captcha.log). Complete 2FA in the browser if Facebook asks.',
+      );
       const result = await api.accounts.login(id);
       const success = Boolean(result.success);
       setConnectMessage(
