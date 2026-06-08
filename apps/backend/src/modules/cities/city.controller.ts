@@ -10,6 +10,12 @@ export class CityController {
     sendSuccess(res, cities);
   });
 
+  validate = asyncHandler(async (req: Request, res: Response) => {
+    const query = String(req.query.q ?? req.query.query ?? '').trim();
+    const result = await cityService.validateQuery(query);
+    sendSuccess(res, result, result.valid ? 'City verified' : 'City not found');
+  });
+
   findById = asyncHandler(async (req: Request, res: Response) => {
     const city = await cityService.findById(req.params.id);
     sendSuccess(res, city);

@@ -23,12 +23,19 @@ export const SELECTORS = {
     priceInput: 'input[aria-label*="Price"], input[placeholder*="Price"], label:has-text("Price") + input',
     descriptionInput:
       'textarea[aria-label*="Description"], textarea[placeholder*="Description"], label:has-text("Description") + textarea',
-    categoryDropdown: '[aria-label*="Category"], [placeholder*="Category"]',
-    locationInput: '[aria-label*="Location"], input[placeholder*="Location"]',
+    categoryDropdown:
+      'input[placeholder="Category"], [placeholder="Category"], [aria-label="Category"], [aria-label*="Category"]',
+    conditionDropdown:
+      'input[placeholder="Condition"], [placeholder="Condition"], [aria-label="Condition"], [aria-label*="Condition"]',
+    locationInput: '[aria-label*="Location"], input[placeholder*="Location"], input[placeholder*="City"]',
+    moreDetailsButton:
+      'text=More details, text=Show more, [aria-label*="More details"], [aria-label*="Show more"], div:has-text("More details"), div:has-text("Show more"), span:has-text("More details"), span:has-text("Show more")',
     imageUpload: 'input[type="file"][accept*="image"]',
     addPhotosButton: '[aria-label*="Add photos"], [aria-label*="Add Photos"], text=Add photos',
-    nextButton: 'div[aria-label="Next"], button:has-text("Next")',
-    publishButton: 'div[aria-label="Publish"], button:has-text("Publish")',
+    nextButton:
+      'div[aria-label="Next"], button:has-text("Next"), [role="button"]:has-text("Next"), span:has-text("Next")',
+    publishButton:
+      'div[aria-label="Publish"], button:has-text("Publish"), [role="button"]:has-text("Publish"), span:has-text("Publish")',
   },
   inbox: {
     conversationList: '[role="row"], [data-testid*="conversation"]',

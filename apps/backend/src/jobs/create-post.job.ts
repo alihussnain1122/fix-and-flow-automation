@@ -1,5 +1,6 @@
 import { Job } from 'bullmq';
 import { JobName, CreatePostJobData } from '@fix-and-flow/types';
+import { NotFoundError } from '@fix-and-flow/shared';
 import { logger } from '../config/logger';
 import { postingService } from '../modules/posting/posting.service';
 import { logService } from '../services/log.service';
@@ -31,6 +32,11 @@ export async function processCreatePostJob(job: Job<CreatePostJobData>): Promise
       metadata: { jobId: job.id },
     });
   } catch (error) {
+    if (error instanceof NotFoundError) {
+      logger.warn({ postId, accountId, jobId: job.id }, 'Post no longer exists — skipping queued job');
+      return;
+    }
+
     const message = error instanceof Error ? error.message : 'Job processing failed';
 
     await logService.create({

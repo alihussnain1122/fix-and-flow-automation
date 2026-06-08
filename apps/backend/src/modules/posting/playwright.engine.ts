@@ -1,10 +1,11 @@
-import type { Browser, BrowserContext, Page } from 'playwright';
+import type { Browser, BrowserContext, Page, Locator } from 'playwright';
 import { AccountStatus } from '@fix-and-flow/types';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
-import { humanTypeInput, randomDelay, simulateTyping } from '../../utils/human-behavior';
+import { humanTypeInput, randomDelay, simulateTyping, randomBetween, randomTypingDelay } from '../../utils/human-behavior';
+import { normalizeFacebookCookies, hasFacebookSessionCookie } from '../../utils/facebook-cookies';
 import { launchStealthBrowser } from '../../utils/playwright-browser';
-import { downloadImageToTemp, cleanupTempFiles } from '../../utils/network';
+import { resolveImageToTempPath, cleanupTempFiles } from '../../utils/network';
 import { gotoWithRetry, gotoFacebookWithFallback, isNetworkError, isProxyNetworkError } from '../../utils/playwright-navigation';
 import {
   isExecutionContextDestroyedError,
@@ -21,6 +22,12 @@ import {
 } from '../../services/captcha.integration';
 import { captchaLogger, getCaptchaLogPath } from '../../config/captcha.logger';
 import { SELECTORS } from './marketplace.selectors';
+import { isCategorySelected, selectMarketplaceCategory } from './marketplace-category';
+import {
+  isConditionSelected,
+  selectMarketplaceCondition,
+  waitForListingForm,
+} from './marketplace-dropdown';
 import { detectAccountHealth, AccountHealthResult } from './account-health';
 import {
   BrowserSession,
@@ -110,10 +117,18 @@ export class PlaywrightEngine {
 
     if (credentials.cookies) {
       try {
-        const cookies = JSON.parse(credentials.cookies);
-        if (Array.isArray(cookies) && cookies.length > 0) {
-          await context.addCookies(cookies);
-          logger.info({ accountId: credentials.accountId, count: cookies.length }, 'Cookies loaded');
+        const parsed = JSON.parse(credentials.cookies);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const cookies = normalizeFacebookCookies(parsed);
+          await context.addCookies(cookies as unknown as Parameters<BrowserContext['addCookies']>[0]);
+          logger.info(
+            {
+              accountId: credentials.accountId,
+              count: cookies.length,
+              hasSession: hasFacebookSessionCookie(cookies as Array<{ name?: string; value?: string }>),
+            },
+            'Cookies loaded',
+          );
         }
       } catch (err) {
         logger.warn({ accountId: credentials.accountId, err }, 'Failed to parse cookies');
@@ -131,10 +146,85 @@ export class PlaywrightEngine {
     await session.browser.close();
   }
 
-  async checkPageHealth(page: Page): Promise<AccountHealthResult> {
+  async checkPageHealth(page: Page, context?: BrowserContext): Promise<AccountHealthResult> {
     await waitForPageStable(page, { timeoutMs: 8_000 }).catch(() => undefined);
+    await this.dismissPostLoginDialogs(page);
+
+    const loginFormVisible = await page
+      .locator(SELECTORS.login.emailInput)
+      .first()
+      .isVisible({ timeout: 2_000 })
+      .catch(() => false);
+
+    if (loginFormVisible) {
+      return {
+        status: AccountStatus.INACTIVE,
+        isLoggedIn: false,
+        reason: 'Facebook login page',
+      };
+    }
+
+    const cookies = context ? await context.cookies() : [];
     const text = await page.locator('body').innerText().catch(() => '');
-    return detectAccountHealth(text, page.url());
+    return detectAccountHealth(text, page.url(), cookies);
+  }
+
+  async checkMarketplaceAccess(session: BrowserSession): Promise<AccountHealthResult> {
+    const { page, context } = session;
+
+    await waitForPageStable(page, { timeoutMs: 12_000 }).catch(() => undefined);
+    await this.dismissPostLoginDialogs(page);
+
+    const url = page.url().toLowerCase();
+    const cookies = await context.cookies();
+
+    if (url.includes('/login') || url.includes('checkpoint')) {
+      return {
+        status: AccountStatus.INACTIVE,
+        isLoggedIn: false,
+        reason: 'Redirected to Facebook login — re-connect the account under Accounts',
+      };
+    }
+
+    const loginFormVisible = await page
+      .locator(SELECTORS.login.emailInput)
+      .first()
+      .isVisible({ timeout: 2_000 })
+      .catch(() => false);
+
+    if (loginFormVisible) {
+      return {
+        status: AccountStatus.INACTIVE,
+        isLoggedIn: false,
+        reason: 'Facebook login required — re-connect the account under Accounts',
+      };
+    }
+
+    const text = await page.locator('body').innerText().catch(() => '');
+    const textHealth = detectAccountHealth(text, url, cookies);
+
+    if (textHealth.status === AccountStatus.BANNED || textHealth.status === AccountStatus.FLAGGED) {
+      return textHealth;
+    }
+
+    const hasCreateForm = await page
+      .locator(SELECTORS.marketplace.titleInput)
+      .first()
+      .isVisible({ timeout: 12_000 })
+      .catch(() => false);
+
+    const onMarketplace = url.includes('marketplace');
+    const hasSession = hasFacebookSessionCookie(cookies);
+
+    if (hasCreateForm || (onMarketplace && hasSession)) {
+      return { status: AccountStatus.ACTIVE, isLoggedIn: true };
+    }
+
+    return {
+      status: AccountStatus.INACTIVE,
+      isLoggedIn: false,
+      reason: textHealth.reason ?? 'Could not open Marketplace create listing',
+    };
   }
 
   async withResilientSession<T>(
@@ -466,7 +556,7 @@ export class PlaywrightEngine {
         credentials,
         async (session) => {
           await this.navigateToFacebook(session.page);
-          let health = await this.checkPageHealth(session.page);
+          let health = await this.checkPageHealth(session.page, session.context);
           let manualAuthCompleted = false;
 
           if (!health.isLoggedIn) {
@@ -503,7 +593,7 @@ export class PlaywrightEngine {
             manualAuthCompleted = manualAuthCompleted || wait.manualAuth;
 
             if (!wait.completed) {
-              health = await this.checkPageHealth(session.page);
+              health = await this.checkPageHealth(session.page, session.context);
               const captchaMode = getCaptchaMode();
               const logHint = `See ${getCaptchaLogPath()} for captcha details`;
 
@@ -537,7 +627,7 @@ export class PlaywrightEngine {
           }
 
           await this.dismissPostLoginDialogs(session.page);
-          health = await this.checkPageHealth(session.page);
+          health = await this.checkPageHealth(session.page, session.context);
 
           const cookies = await session.context.cookies();
           if (callbacks?.onCookiesUpdated && cookies.length > 0) {
@@ -610,22 +700,33 @@ export class PlaywrightEngine {
     session: BrowserSession,
     credentials: PostingCredentials & { password?: string },
     callbacks?: SessionCallbacks,
+    options?: { allowCredentialLogin?: boolean },
   ): Promise<AccountHealthResult> {
     await this.navigateToFacebook(session.page);
     await this.simulateHumanInteraction(session.page);
 
-    let health = await this.checkPageHealth(session.page);
+    let health = await this.checkPageHealth(session.page, session.context);
 
-    if (!health.isLoggedIn && credentials.password && credentials.email) {
+    const allowLogin = options?.allowCredentialLogin !== false;
+
+    if (!health.isLoggedIn && allowLogin && credentials.password && credentials.email) {
       const loggedIn = await this.loginWithCredentials(
         session.page,
         credentials.email,
         credentials.password,
       );
-      health = await this.checkPageHealth(session.page);
+      health = await this.checkPageHealth(session.page, session.context);
       if (!loggedIn) {
         health = { ...health, isLoggedIn: false, reason: 'Login failed' };
       }
+    } else if (!health.isLoggedIn && !allowLogin) {
+      health = {
+        ...health,
+        isLoggedIn: false,
+        reason:
+          health.reason ??
+          'Facebook session expired or missing. Re-connect the account under Accounts → Connect Facebook.',
+      };
     }
 
     if (callbacks?.onAccountHealth) {
@@ -653,7 +754,7 @@ export class PlaywrightEngine {
     await randomDelay(3000, 6000);
   }
 
-  async simulateHumanInteraction(page: Page): Promise<void> {
+  async simulateHumanInteraction(page: Page, options?: { scroll?: boolean }): Promise<void> {
     const viewport = page.viewportSize();
     if (!viewport) return;
 
@@ -662,8 +763,10 @@ export class PlaywrightEngine {
 
     await page.mouse.move(x, y, { steps: randomSteps() });
     await randomDelay(500, 1500);
-    await page.evaluate('window.scrollBy(0, Math.random() * 300)');
-    await randomDelay(1000, 2000);
+    if (options?.scroll !== false) {
+      await page.evaluate('window.scrollBy(0, Math.random() * 300)');
+      await randomDelay(1000, 2000);
+    }
   }
 
   async uploadImages(page: Page, imageUrls: string[]): Promise<void> {
@@ -674,14 +777,16 @@ export class PlaywrightEngine {
 
     try {
       for (const url of imageUrls.slice(0, 10)) {
-        const localPath = await downloadImageToTemp(url);
+        const localPath = await resolveImageToTempPath(url);
         tempFiles.push(localPath);
       }
 
       const fileInput = page.locator(SELECTORS.marketplace.imageUpload).first();
       if (await fileInput.count()) {
         await fileInput.setInputFiles(tempFiles);
-        await randomDelay(3000, 6000);
+        await randomDelay(4000, 7000);
+        await waitForPageStable(page, { timeoutMs: 10_000 }).catch(() => undefined);
+        await this.clickNextIfVisible(page);
         return;
       }
 
@@ -692,81 +797,258 @@ export class PlaywrightEngine {
           addPhotos.click(),
         ]);
         await fileChooser.setFiles(tempFiles);
-        await randomDelay(3000, 6000);
+        await randomDelay(4000, 7000);
+        await waitForPageStable(page, { timeoutMs: 10_000 }).catch(() => undefined);
+        await this.clickNextIfVisible(page);
       }
     } finally {
       await cleanupTempFiles(tempFiles);
     }
   }
 
-  async fillListingForm(page: Page, listing: ListingData): Promise<void> {
-    logger.info({ title: listing.title }, 'Filling listing form');
-
-    const titleInput = page.locator(SELECTORS.marketplace.titleInput).first();
-    if (await titleInput.isVisible({ timeout: 10000 }).catch(() => false)) {
-      await titleInput.click();
-      await randomDelay(500, 1000);
-      await simulateTyping(async (char) => {
-        await titleInput.pressSequentially(char, { delay: 0 });
-      }, listing.title);
-      await randomDelay(1000, 2000);
-    }
-
-    const priceInput = page.locator(SELECTORS.marketplace.priceInput).first();
-    if (listing.price != null && (await priceInput.isVisible({ timeout: 5000 }).catch(() => false))) {
-      await priceInput.click();
-      await randomDelay(500, 1000);
-      await priceInput.fill(String(listing.price));
-      await randomDelay(1000, 2000);
-    }
-
-    const descInput = page.locator(SELECTORS.marketplace.descriptionInput).first();
-    if (await descInput.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await descInput.click();
-      await randomDelay(500, 1000);
-      await simulateTyping(async (char) => {
-        await descInput.pressSequentially(char, { delay: 0 });
-      }, listing.description);
-      await randomDelay(1000, 2000);
-    }
-
-    if (listing.city) {
-      const locationInput = page.locator(SELECTORS.marketplace.locationInput).first();
-      if (await locationInput.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await locationInput.click();
-        await randomDelay(500, 1000);
-        await locationInput.fill(listing.city);
-        await randomDelay(1500, 2500);
-        await page.keyboard.press('ArrowDown');
-        await randomDelay(300, 600);
-        await page.keyboard.press('Enter');
-        await randomDelay(1000, 2000);
+  private async isPublishButtonVisible(page: Page): Promise<boolean> {
+    const candidates = this.getPublishButtonLocators(page);
+    for (const locator of candidates) {
+      if (await locator.isVisible({ timeout: 1500 }).catch(() => false)) {
+        return true;
       }
+    }
+    return false;
+  }
+
+  private getPublishButtonLocators(page: Page): Locator[] {
+    return [
+      page.getByRole('button', { name: /^Publish$/i }).first(),
+      page.locator('div[aria-label="Publish"]').first(),
+      page.locator('[role="button"]:has-text("Publish")').first(),
+      page.locator(SELECTORS.marketplace.publishButton).first(),
+    ];
+  }
+
+  private async clickNextIfVisible(page: Page): Promise<boolean> {
+    const nextCandidates = [
+      page.getByRole('button', { name: /^Next$/i }).first(),
+      page.locator('div[aria-label="Next"]').first(),
+      page.locator(SELECTORS.marketplace.nextButton).first(),
+    ];
+
+    for (const nextBtn of nextCandidates) {
+      if (await nextBtn.isVisible({ timeout: 2500 }).catch(() => false)) {
+        await nextBtn.scrollIntoViewIfNeeded().catch(() => undefined);
+        await nextBtn.click({ timeout: 8000, delay: randomBetween(50, 140) }).catch(() => undefined);
+        await waitForPageStable(page, { timeoutMs: 8000 }).catch(() => undefined);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async fillFieldIfNeeded(page: Page, locators: Locator[], value: string): Promise<boolean> {
+    const target = value.trim();
+    if (!target) return false;
+
+    for (const field of locators) {
+      if (!(await field.isVisible({ timeout: 2500 }).catch(() => false))) continue;
+
+      const current = (await field.inputValue().catch(() => '')).trim();
+      if (current === target || current.includes(target.slice(0, Math.min(20, target.length)))) {
+        return true;
+      }
+
+      await field.evaluate(
+        'el => el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" })',
+      );
+      await field.click({ delay: randomBetween(60, 160) });
+      await field.fill('');
+      await humanTypeInput(page, field, target);
+      return true;
+    }
+    return false;
+  }
+
+  private async fillPriceIfNeeded(page: Page, price: number): Promise<void> {
+    const priceValue = String(price ?? 0);
+    const priceFields = [
+      page.getByPlaceholder('Price', { exact: true }).first(),
+      page.getByLabel(/^Price/i).first(),
+      page.locator(SELECTORS.marketplace.priceInput).first(),
+    ];
+
+    for (const priceField of priceFields) {
+      if (!(await priceField.isVisible({ timeout: 2500 }).catch(() => false))) continue;
+
+      const current = (await priceField.inputValue().catch(() => '')).trim();
+      if (current === priceValue) return;
+
+      await priceField.scrollIntoViewIfNeeded().catch(() => undefined);
+      await priceField.click({ delay: randomBetween(60, 160) });
+      await priceField.fill('');
+      await simulateTyping(async (char) => {
+        await priceField.pressSequentially(char, { delay: randomTypingDelay() });
+      }, priceValue);
+      return;
     }
   }
 
-  async clickThroughSteps(page: Page): Promise<void> {
-    for (let step = 0; step < 3; step++) {
-      const nextBtn = page.locator(SELECTORS.marketplace.nextButton).first();
-      if (await nextBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await randomDelay(1500, 3000);
-        await nextBtn.click();
-        await randomDelay(2000, 4000);
-      } else {
-        break;
-      }
+  private async expandMoreDetails(page: Page): Promise<boolean> {
+    logger.info('Expanding Show more / More details section');
+
+    const triggers: Locator[] = [
+      page.getByText('Show more', { exact: true }).first(),
+      page.getByText('More details', { exact: true }).first(),
+      page.getByRole('button', { name: /show more/i }).first(),
+      page.getByRole('button', { name: /more details/i }).first(),
+      page.locator('div:has-text("Show more")').first(),
+      page.locator('div:has-text("More details")').first(),
+      page.locator(SELECTORS.marketplace.moreDetailsButton).first(),
+    ];
+
+    for (const trigger of triggers) {
+      if (!(await trigger.isVisible({ timeout: 2000 }).catch(() => false))) continue;
+
+      const expanded = await trigger.getAttribute('aria-expanded').catch(() => null);
+      if (expanded === 'true') return true;
+
+      await trigger.click({ timeout: 8000, delay: randomBetween(50, 140) });
+      await waitForPageStable(page, { timeoutMs: 4000 }).catch(() => undefined);
+      await randomDelay(500, 1000);
+      return true;
     }
+
+    return false;
+  }
+
+  private async fillCityInMoreDetails(page: Page, city: string): Promise<void> {
+    const expanded = await this.expandMoreDetails(page);
+    if (!expanded) {
+      logger.warn('Show more / More details button not found — trying city field anyway');
+    }
+
+    const cityFields = [
+      page.getByLabel(/^Location/i).first(),
+      page.getByPlaceholder(/location/i).first(),
+      page.locator(SELECTORS.marketplace.locationInput).first(),
+      page.getByLabel(/^City/i).first(),
+      page.getByPlaceholder(/city/i).first(),
+    ];
+
+    for (const field of cityFields) {
+      if (!(await field.isVisible({ timeout: 4000 }).catch(() => false))) continue;
+
+      const current = (await field.inputValue().catch(() => '')).trim();
+      const cityPart = city.split(',')[0].trim();
+      if (current.includes(cityPart)) return;
+
+      await field.click({ delay: randomBetween(60, 160) });
+      await field.fill('');
+      await field.fill(city.split(',')[0].trim());
+      await randomDelay(500, 900);
+      await page.keyboard.press('ArrowDown');
+      await randomDelay(150, 300);
+      await page.keyboard.press('Enter');
+      await randomDelay(400, 800);
+      return;
+    }
+
+    logger.warn({ city }, 'City/location field not found after Show more');
+  }
+
+  private async fillListingDetails(page: Page, listing: ListingData): Promise<void> {
+    if (!listing.category?.trim()) {
+      throw new Error('Category is required for Marketplace listing');
+    }
+    if (!listing.condition?.trim()) {
+      throw new Error('Condition is required for Marketplace listing');
+    }
+    if (!listing.city?.trim()) {
+      throw new Error('City is required for Marketplace listing');
+    }
+
+    logger.info(
+      {
+        title: listing.title,
+        city: listing.city,
+        category: listing.category,
+        condition: listing.condition,
+      },
+      'Filling listing form (Facebook order)',
+    );
+
+    await this.simulateHumanInteraction(page, { scroll: false });
+    await waitForListingForm(page);
+
+    await this.fillFieldIfNeeded(
+      page,
+      [
+        page.getByPlaceholder('Title', { exact: true }).first(),
+        page.getByLabel(/^Title/i).first(),
+        page.locator(SELECTORS.marketplace.titleInput).first(),
+      ],
+      listing.title,
+    );
+
+    await this.fillPriceIfNeeded(page, listing.price ?? 0);
+    await randomDelay(400, 800);
+
+    const categoryOk = await selectMarketplaceCategory(page, listing.category);
+    if (!categoryOk || !(await isCategorySelected(page, listing.category))) {
+      throw new Error(`Could not select category "${listing.category}" on Marketplace`);
+    }
+
+    const conditionOk = await selectMarketplaceCondition(page, listing.condition);
+    if (!conditionOk || !(await isConditionSelected(page, listing.condition))) {
+      throw new Error(`Could not select condition "${listing.condition}" on Marketplace`);
+    }
+
+    if (listing.description?.trim()) {
+      await this.fillFieldIfNeeded(
+        page,
+        [
+          page.getByLabel(/^Description/i).first(),
+          page.locator(SELECTORS.marketplace.descriptionInput).first(),
+          page.getByPlaceholder(/description/i).first(),
+        ],
+        listing.description,
+      );
+    }
+
+    await this.fillCityInMoreDetails(page, listing.city);
+  }
+
+  async fillListingForm(page: Page, listing: ListingData): Promise<void> {
+    await this.fillListingDetails(page, listing);
+  }
+
+  async clickThroughSteps(page: Page): Promise<void> {
+    if (await this.isPublishButtonVisible(page)) return;
+
+    const advanced = await this.clickNextIfVisible(page);
+    if (!advanced) return;
+
+    await waitForPageStable(page, { timeoutMs: 8000 }).catch(() => undefined);
+    await randomDelay(800, 1500);
   }
 
   async publishListing(page: Page): Promise<PostingResult> {
     logger.info('Attempting to publish listing');
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)').catch(() => undefined);
     await this.clickThroughSteps(page);
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)').catch(() => undefined);
 
-    const publishButton = page.locator(SELECTORS.marketplace.publishButton).first();
-    if (await publishButton.isVisible({ timeout: 10000 }).catch(() => false)) {
-      await randomDelay(2000, 4000);
-      await publishButton.click();
-      await randomDelay(5000, 10000);
+    const publishCandidates = [
+      ...this.getPublishButtonLocators(page),
+      page.locator('text=Publish').last(),
+      page.locator('[aria-label="Publish"]').last(),
+    ];
+
+    for (const publishButton of publishCandidates) {
+      if (!(await publishButton.isVisible({ timeout: 8_000 }).catch(() => false))) {
+        continue;
+      }
+
+      await publishButton.scrollIntoViewIfNeeded().catch(() => undefined);
+      await publishButton.click({ timeout: 10_000, delay: randomBetween(80, 180) }).catch(() => undefined);
+      await waitForPageStable(page, { timeoutMs: 20_000 }).catch(() => undefined);
 
       const currentUrl = page.url();
       if (currentUrl.includes('marketplace') && !currentUrl.includes('create')) {
@@ -777,6 +1059,20 @@ export class PlaywrightEngine {
           listingId: listingIdMatch?.[1],
         };
       }
+
+      const stillPublishing = await publishButton.isVisible({ timeout: 2_000 }).catch(() => false);
+      if (!stillPublishing && currentUrl.includes('marketplace')) {
+        return { success: true, listingUrl: currentUrl };
+      }
+    }
+
+    const categoryStillEmpty = !(await isCategorySelected(page));
+    const conditionStillEmpty = !(await isConditionSelected(page));
+    if (categoryStillEmpty) {
+      return { success: false, error: 'Category is required — select a category on the post before publishing' };
+    }
+    if (conditionStillEmpty) {
+      return { success: false, error: 'Condition is required — select a condition on the post before publishing' };
     }
 
     return { success: false, error: 'Could not find or click publish button' };
@@ -788,23 +1084,85 @@ export class PlaywrightEngine {
     callbacks?: SessionCallbacks,
     sessionOptions?: SessionRunOptions,
   ): Promise<PostingResult> {
+    const headless = sessionOptions?.headless ?? env.PLAYWRIGHT_POST_HEADLESS;
+
     try {
       return await this.withResilientSession(
         credentials,
         async (session) => {
-          const health = await this.ensureLoggedIn(session, credentials, callbacks);
+          const allowLogin = sessionOptions?.allowCredentialLogin !== false;
+
+          // Step 1: Open Facebook (load saved session cookies)
+          logger.info({ accountId: credentials.accountId }, 'Step 1/5: Open Facebook');
+          await this.navigateToFacebook(session.page);
+          await this.dismissPostLoginDialogs(session.page);
+          await this.simulateHumanInteraction(session.page);
+
+          let health = await this.checkPageHealth(session.page, session.context);
+
+          if (
+            !health.isLoggedIn &&
+            allowLogin &&
+            credentials.password &&
+            credentials.email
+          ) {
+            const loggedIn = await this.loginWithCredentials(
+              session.page,
+              credentials.email,
+              credentials.password,
+              credentials.accountId,
+            );
+            if (loggedIn) {
+              health = await this.checkPageHealth(session.page, session.context);
+            }
+          }
+
           if (!health.isLoggedIn) {
-            return { success: false, error: health.reason ?? 'Account not logged in' };
+            return {
+              success: false,
+              error:
+                health.reason ??
+                'Facebook session expired. Re-connect the account under Accounts → Connect Facebook.',
+            };
           }
           if (health.status === AccountStatus.BANNED || health.status === AccountStatus.FLAGGED) {
             return { success: false, error: `Account ${health.status}: ${health.reason}` };
           }
 
+          // Step 2: Navigate to Marketplace
+          logger.info({ accountId: credentials.accountId }, 'Step 2/5: Navigate to Marketplace');
           await this.navigateToMarketplace(session.page);
+          await this.dismissPostLoginDialogs(session.page);
+          await randomDelay(2000, 4000);
+
+          health = await this.checkMarketplaceAccess(session);
+          if (!health.isLoggedIn) {
+            return {
+              success: false,
+              error: health.reason ?? 'Could not access Facebook Marketplace',
+            };
+          }
+
+          if (callbacks?.onAccountHealth) {
+            await callbacks.onAccountHealth(health);
+          }
+
+          // Step 3: Create listing (create form ready)
+          logger.info({ accountId: credentials.accountId }, 'Step 3/5: Create listing');
           await this.simulateHumanInteraction(session.page);
+
+          // Step 4: Upload images
+          logger.info(
+            { accountId: credentials.accountId, count: listing.imageUrls.length },
+            'Step 4/5: Upload images',
+          );
           await this.uploadImages(session.page, listing.imageUrls);
           await this.fillListingForm(session.page, listing);
           await this.simulateHumanInteraction(session.page);
+
+          logger.info({ accountId: credentials.accountId }, 'Step 5/5: Next then Publish');
+          await this.clickNextIfVisible(session.page);
+          await waitForPageStable(session.page, { timeoutMs: 8000 }).catch(() => undefined);
 
           const result = await this.publishListing(session.page);
 
@@ -815,7 +1173,7 @@ export class PlaywrightEngine {
 
           return result;
         },
-        sessionOptions,
+        { ...sessionOptions, headless },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown posting error';

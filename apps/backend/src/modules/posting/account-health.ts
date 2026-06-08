@@ -1,4 +1,5 @@
 import { AccountStatus } from '@fix-and-flow/types';
+import { hasFacebookSessionCookie } from '../../utils/facebook-cookies';
 import { BAN_INDICATORS, FLAGGED_INDICATORS } from './marketplace.selectors';
 
 export interface AccountHealthResult {
@@ -7,7 +8,11 @@ export interface AccountHealthResult {
   isLoggedIn: boolean;
 }
 
-export function detectAccountHealth(pageText: string, url: string): AccountHealthResult {
+export function detectAccountHealth(
+  pageText: string,
+  url: string,
+  cookies?: Array<{ name?: string; value?: string }>,
+): AccountHealthResult {
   const lowerText = pageText.toLowerCase();
   const lowerUrl = url.toLowerCase();
 
@@ -30,11 +35,21 @@ export function detectAccountHealth(pageText: string, url: string): AccountHealt
     };
   }
 
+  if (lowerUrl.includes('/login') || lowerUrl.includes('/reg/')) {
+    return {
+      status: AccountStatus.INACTIVE,
+      isLoggedIn: false,
+      reason: 'Facebook login page',
+    };
+  }
+
+  const sessionCookie = cookies ? hasFacebookSessionCookie(cookies) : false;
+
   const isLoggedIn =
-    !lowerUrl.includes('/login') &&
-    (lowerText.includes('marketplace') ||
-      lowerText.includes('home') ||
-      documentHasFeedIndicators(lowerText));
+    sessionCookie ||
+    lowerUrl.includes('marketplace') ||
+    documentHasFeedIndicators(lowerText) ||
+    lowerText.includes('facebook') && !lowerText.includes('log in') && !lowerText.includes('sign up');
 
   return {
     status: isLoggedIn ? AccountStatus.ACTIVE : AccountStatus.INACTIVE,
@@ -46,7 +61,9 @@ export function detectAccountHealth(pageText: string, url: string): AccountHealt
 function documentHasFeedIndicators(text: string): boolean {
   return (
     text.includes('notifications') ||
-    text.includes('what\'s on your mind') ||
-    text.includes('create a post')
+    text.includes("what's on your mind") ||
+    text.includes('create a post') ||
+    text.includes('meta') ||
+    text.includes('search facebook')
   );
 }

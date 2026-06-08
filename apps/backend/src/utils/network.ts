@@ -7,6 +7,51 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { logger } from '../config/logger';
 import { decrypt } from '../utils/encryption';
 
+/** Resolve an image URL, data URL, or local path to a temp file for Playwright upload. */
+export async function resolveImageToTempPath(source: string): Promise<string> {
+  if (source.startsWith('data:')) {
+    return writeDataUrlToTemp(source);
+  }
+
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    return downloadImageToTemp(source);
+  }
+
+  if (fs.existsSync(source)) {
+    return source;
+  }
+
+  throw new Error(`Unsupported image source: ${source.slice(0, 48)}`);
+}
+
+function writeDataUrlToTemp(dataUrl: string): string {
+  const match = dataUrl.match(/^data:([^;,]+)?(?:;base64)?,(.+)$/);
+  if (!match) {
+    throw new Error('Invalid image data URL');
+  }
+
+  const mime = match[1] ?? 'image/jpeg';
+  const payload = match[2];
+  const ext = mime.includes('png')
+    ? '.png'
+    : mime.includes('webp')
+      ? '.webp'
+      : mime.includes('gif')
+        ? '.gif'
+        : '.jpg';
+
+  const buffer = dataUrl.includes(';base64,')
+    ? Buffer.from(payload, 'base64')
+    : Buffer.from(decodeURIComponent(payload), 'utf8');
+
+  const tempPath = path.join(
+    os.tmpdir(),
+    `fix-flow-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`,
+  );
+  fs.writeFileSync(tempPath, buffer);
+  return tempPath;
+}
+
 export async function downloadImageToTemp(url: string): Promise<string> {
   const ext = path.extname(new URL(url).pathname) || '.jpg';
   const tempPath = path.join(os.tmpdir(), `fix-flow-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

@@ -35,9 +35,19 @@ export interface CreatePostDto {
   price?: number;
   imageUrls?: string[];
   scheduledAt?: Date;
+  city?: string;
+  category?: string;
+  condition?: string;
 }
 
 export interface UpdatePostDto {
+  title?: string;
+  description?: string;
+  price?: number | null;
+  imageUrls?: string[];
+  city?: string;
+  category?: string;
+  condition?: string;
   status?: PostStatus;
   facebookListingId?: string;
   facebookListingUrl?: string;

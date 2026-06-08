@@ -4,6 +4,7 @@ import { cityController } from './city.controller';
 const router = Router();
 
 router.get('/', cityController.findAll);
+router.get('/validate', cityController.validate);
 router.get('/:id', cityController.findById);
 router.post('/', cityController.create);
 router.patch('/:id', cityController.update);

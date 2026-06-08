@@ -1,10 +1,18 @@
 import { logger } from '../config/logger';
 import { schedulerService } from '../modules/scheduler/scheduler.service';
+import { postingService } from '../modules/posting/posting.service';
 
 export async function processSchedulerTick(): Promise<void> {
-  logger.info('Running scheduler tick');
+  const schedulesProcessed = await schedulerService.processDueSchedules();
+  const automationProcessed = await postingService.processAutomationQueue();
+  const processed = schedulesProcessed + automationProcessed;
 
-  const processed = await schedulerService.processDueSchedules();
-
-  logger.info({ processed }, 'Scheduler tick completed');
+  if (processed > 0) {
+    logger.info(
+      { schedulesProcessed, automationProcessed, processed },
+      'Scheduler tick completed',
+    );
+  } else {
+    logger.debug('Scheduler tick completed (nothing due)');
+  }
 }

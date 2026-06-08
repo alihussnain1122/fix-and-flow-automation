@@ -29,6 +29,7 @@ export interface ListingData {
   imageUrls: string[];
   category?: string;
   city?: string;
+  condition?: string;
 }
 
 export interface PostingResult {
@@ -80,6 +81,8 @@ export interface VerifyAccountResult {
 export interface SessionRunOptions {
   onProxyFailure?: () => Promise<void>;
   headless?: boolean;
+  /** When false, posting uses saved cookies only — no credential login. Default true. */
+  allowCredentialLogin?: boolean;
 }
 
 export interface FacebookLoginResult {

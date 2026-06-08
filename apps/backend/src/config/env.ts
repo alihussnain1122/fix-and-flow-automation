@@ -64,6 +64,11 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === 'true')
     .default('true'),
+  /** When false, posting opens a visible browser (recommended) */
+  PLAYWRIGHT_POST_HEADLESS: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
   /** Dedicated captcha debug log file path */
   CAPTCHA_LOG_PATH: z.string().default('logs/captcha.log'),
 

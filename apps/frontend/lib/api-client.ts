@@ -70,7 +70,16 @@ export const api = {
       request<PaginatedResponse<Record<string, unknown>>>(`/posts${qs({ page, limit })}`),
     create: (body: Record<string, unknown>) =>
       request<Record<string, unknown>>('/posts', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: Record<string, unknown>) =>
+      request<Record<string, unknown>>(`/posts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id: string) => request<null>(`/posts/${id}`, { method: 'DELETE' }),
     execute: (id: string) => request<null>(`/posts/${id}/execute`, { method: 'POST' }),
+    getAutomationSettings: () => request<{ enabled: boolean }>('/posts/automation/settings'),
+    setAutomationSettings: (enabled: boolean) =>
+      request<{ enabled: boolean }>('/posts/automation/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
   },
 
   schedules: {
@@ -100,6 +109,10 @@ export const api = {
 
   cities: {
     list: () => request<Array<Record<string, unknown>>>('/cities'),
+    validate: (query: string) =>
+      request<{ valid: boolean; normalized?: string; reason?: string }>(
+        `/cities/validate${qs({ q: query })}`,
+      ),
     create: (body: Record<string, unknown>) =>
       request<Record<string, unknown>>('/cities', { method: 'POST', body: JSON.stringify(body) }),
     delete: (id: string) => request<null>(`/cities/${id}`, { method: 'DELETE' }),

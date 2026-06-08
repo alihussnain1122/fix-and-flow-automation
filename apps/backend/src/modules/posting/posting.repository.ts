@@ -87,6 +87,17 @@ export class PostingRepository {
     return result.rows[0] ?? null;
   }
 
+  async findPendingForAutomation(limit: number): Promise<Post[]> {
+    const result = await query<PostRow>(
+      `SELECT * FROM posts
+       WHERE status = $1
+       ORDER BY created_at ASC
+       LIMIT $2`,
+      [PostStatus.PENDING, limit],
+    );
+    return result.rows.map((row) => this.mapRow(row));
+  }
+
   async create(data: {
     accountId: string;
     contentTemplateId?: string;
@@ -96,10 +107,11 @@ export class PostingRepository {
     imageUrls?: string[];
     scheduledAt?: Date;
     status?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<Post> {
     const result = await query<PostRow>(
-      `INSERT INTO posts (account_id, content_template_id, title, description, price, image_urls, scheduled_at, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO posts (account_id, content_template_id, title, description, price, image_urls, scheduled_at, status, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         data.accountId,
@@ -110,6 +122,7 @@ export class PostingRepository {
         JSON.stringify(data.imageUrls ?? []),
         data.scheduledAt ?? null,
         data.status ?? PostStatus.PENDING,
+        JSON.stringify(data.metadata ?? {}),
       ],
     );
     return this.mapRow(result.rows[0]);
@@ -118,10 +131,14 @@ export class PostingRepository {
   async update(
     id: string,
     data: Partial<{
+      title: string;
+      description: string;
+      price: number | null;
+      imageUrls: string[];
       status: string;
       facebookListingId: string;
       facebookListingUrl: string;
-      errorMessage: string;
+      errorMessage: string | null;
       publishedAt: Date;
       retryCount: number;
       metadata: Record<string, unknown>;
@@ -132,6 +149,10 @@ export class PostingRepository {
     let paramIndex = 1;
 
     const fieldMap: Record<string, string> = {
+      title: 'title',
+      description: 'description',
+      price: 'price',
+      imageUrls: 'image_urls',
       status: 'status',
       facebookListingId: 'facebook_listing_id',
       facebookListingUrl: 'facebook_listing_url',
@@ -145,7 +166,13 @@ export class PostingRepository {
       const value = data[key as keyof typeof data];
       if (value !== undefined) {
         fields.push(`${column} = $${paramIndex++}`);
-        params.push(key === 'metadata' ? JSON.stringify(value) : value);
+        if (key === 'metadata') {
+          params.push(JSON.stringify(value));
+        } else if (key === 'imageUrls') {
+          params.push(JSON.stringify(value));
+        } else {
+          params.push(value);
+        }
       }
     }
 
@@ -157,6 +184,11 @@ export class PostingRepository {
       params,
     );
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const result = await query(`DELETE FROM posts WHERE id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
   }
 }
 

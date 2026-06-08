@@ -1,10 +1,15 @@
 import { CreateCityDto, UpdateCityDto } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
 import { cityRepository } from './city.repository';
+import { cityValidationService } from '../../services/city-validation.service';
 
 export class CityService {
   async findAll(activeOnly = false) {
     return cityRepository.findAll(activeOnly);
+  }
+
+  async validateQuery(query: string) {
+    return cityValidationService.validate(query);
   }
 
   async findById(id: string) {

@@ -13,6 +13,24 @@ export const DEFAULT_MAX_INTERVAL_MINUTES = 240;
 
 export const MAX_RETRY_ATTEMPTS = 3;
 
+/** Facebook Marketplace listing categories */
+export const MARKETPLACE_CATEGORIES = [
+  'Home & Garden',
+  'Tools & Home Improvement',
+  'Home Improvement',
+  'Household',
+  'Services',
+  'Miscellaneous',
+  'Other',
+] as const;
+
+export const MARKETPLACE_CONDITIONS = [
+  'New',
+  'Used - Like New',
+  'Used - Good',
+  'Used - Fair',
+] as const;
+
 export const QUEUE_NAMES = {
   POSTING: 'posting-queue',
   INBOX: 'inbox-queue',
