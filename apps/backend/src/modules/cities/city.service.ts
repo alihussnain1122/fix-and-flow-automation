@@ -20,7 +20,21 @@ export class CityService {
 
   async create(dto: CreateCityDto) {
     if (!dto.name?.trim()) throw new ValidationError('City name is required');
-    return cityRepository.create(dto);
+
+    const queryParts = [dto.name.trim()];
+    if (dto.state?.trim()) queryParts.push(dto.state.trim());
+    const countryCode = (dto.country ?? 'US').toLowerCase() === 'us' ? 'us' : 'us';
+    const result = await cityValidationService.validate(queryParts.join(', '), countryCode);
+
+    if (!result.valid) {
+      throw new ValidationError(result.reason ?? 'Invalid city');
+    }
+
+    return cityRepository.create({
+      name: result.name ?? dto.name.trim(),
+      state: result.state ?? dto.state?.trim(),
+      country: dto.country ?? 'US',
+    });
   }
 
   async update(id: string, dto: UpdateCityDto) {

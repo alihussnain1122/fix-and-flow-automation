@@ -23,7 +23,6 @@ type PostForm = {
   categoryPreset: string;
   customCategory: string;
   condition: string;
-  city: string;
   imageUrls: string[];
 };
 
@@ -35,7 +34,6 @@ const emptyForm: PostForm = {
   categoryPreset: MARKETPLACE_CATEGORIES[0],
   customCategory: '',
   condition: MARKETPLACE_CONDITIONS[0],
-  city: '',
   imageUrls: [],
 };
 
@@ -77,39 +75,6 @@ export function PostsClient() {
   const [automationSaving, setAutomationSaving] = useState(false);
   const [form, setForm] = useState<PostForm>(emptyForm);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-  const [cityError, setCityError] = useState('');
-  const [cityVerified, setCityVerified] = useState('');
-  const [cityChecking, setCityChecking] = useState(false);
-
-  const validateCityInput = useCallback(async (city: string) => {
-    const trimmed = city.trim();
-    if (!trimmed) {
-      setCityError('City is required for Marketplace posting');
-      setCityVerified('');
-      return false;
-    }
-
-    setCityChecking(true);
-    setCityError('');
-    try {
-      const result = await api.cities.validate(trimmed);
-      if (!result.valid) {
-        setCityError(result.reason ?? 'City not found');
-        setCityVerified('');
-        return false;
-      }
-      const normalized = result.normalized ?? trimmed;
-      setCityVerified(normalized);
-      setForm((prev) => (prev.city === normalized ? prev : { ...prev, city: normalized }));
-      return true;
-    } catch (err) {
-      setCityError(err instanceof Error ? err.message : 'Could not verify city');
-      setCityVerified('');
-      return false;
-    } finally {
-      setCityChecking(false);
-    }
-  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,7 +86,7 @@ export function PostsClient() {
       ]);
       setItems(posts.items);
       setAccounts(accs.items);
-      setAutomationEnabled(automation.enabled);
+      setAutomationEnabled(Boolean(automation.postsEnabled ?? automation.masterEnabled));
     } finally {
       setLoading(false);
     }
@@ -133,15 +98,12 @@ export function PostsClient() {
     setEditId(null);
     setForm(emptyForm);
     setImagePreviews([]);
-    setCityError('');
-    setCityVerified('');
     setModalOpen(true);
   };
 
   const openEdit = (post: Record<string, unknown>) => {
     const urls = Array.isArray(post.imageUrls) ? (post.imageUrls as string[]) : [];
     const metadata = (post.metadata ?? {}) as Record<string, unknown>;
-    const city = String(metadata.city ?? '');
     const savedCategory = String(metadata.category ?? MARKETPLACE_CATEGORIES[0]);
     const savedCondition = String(metadata.condition ?? MARKETPLACE_CONDITIONS[0]);
     setEditId(String(post.id));
@@ -151,13 +113,10 @@ export function PostsClient() {
       description: String(post.description ?? ''),
       price: post.price != null ? String(post.price) : '',
       condition: conditionToFormField(savedCondition),
-      city,
       ...categoryToFormFields(savedCategory),
       imageUrls: urls,
     });
     setImagePreviews(urls);
-    setCityError('');
-    setCityVerified(city);
     setModalOpen(true);
   };
 
@@ -166,8 +125,6 @@ export function PostsClient() {
     setEditId(null);
     setForm(emptyForm);
     setImagePreviews([]);
-    setCityError('');
-    setCityVerified('');
   };
 
   const columns = [
@@ -181,9 +138,11 @@ export function PostsClient() {
         const metadata = (r.metadata ?? {}) as Record<string, unknown>;
         const category = metadata.category ? String(metadata.category) : '—';
         const condition = metadata.condition ? String(metadata.condition) : '—';
+        const city = metadata.city ? String(metadata.city) : '—';
         return (
           <span className="text-xs text-gray-600">
             {category} · {condition}
+            {city !== '—' && <> · {city}</>}
           </span>
         );
       },
@@ -236,6 +195,7 @@ export function PostsClient() {
             <h3 className="text-sm font-semibold text-gray-900">Automatic posting</h3>
             <p className="mt-1 text-sm text-gray-600">
               Add posts below, then enable automation to publish pending posts on Facebook without clicking Execute.
+              Cities are managed on the Cities page — Playwright rotates through them when posting.
               Connect each account under Accounts first. Manual Execute still works anytime.
             </p>
           </div>
@@ -251,8 +211,11 @@ export function PostsClient() {
               onChange={async (e) => {
                 setAutomationSaving(true);
                 try {
-                  const result = await api.posts.setAutomationSettings(e.target.checked);
-                  setAutomationEnabled(result.enabled);
+                  const result = await api.posts.setAutomationSettings({
+                    postsEnabled: e.target.checked,
+                    masterEnabled: e.target.checked,
+                  });
+                  setAutomationEnabled(Boolean(result.postsEnabled ?? result.masterEnabled ?? e.target.checked));
                 } catch (err) {
                   alert(err instanceof Error ? err.message : 'Could not update automation setting');
                 } finally {
@@ -277,9 +240,6 @@ export function PostsClient() {
           onCancel={closeModal}
           onSubmit={async () => {
             try {
-              const cityOk = await validateCityInput(form.city);
-              if (!cityOk) return;
-
               const category = resolveCategoryForSubmit(form);
               if (!category) {
                 alert('Enter a custom category or pick one from the list');
@@ -301,7 +261,6 @@ export function PostsClient() {
                   title: form.title,
                   description: form.description,
                   price: Number(form.price),
-                  city: form.city,
                   category,
                   condition: form.condition,
                   imageUrls: form.imageUrls,
@@ -312,7 +271,6 @@ export function PostsClient() {
                   title: form.title,
                   description: form.description || undefined,
                   price: Number(form.price),
-                  city: form.city,
                   category,
                   condition: form.condition,
                   imageUrls: form.imageUrls.length ? form.imageUrls : undefined,
@@ -330,6 +288,7 @@ export function PostsClient() {
         <div className="space-y-4">
           <p className="text-sm text-gray-600 rounded-md bg-gray-50 p-3 border">
             Facebook order: upload images → title → price → category → condition → Show more → city → Next → Publish.
+            City is picked automatically from your Cities list when Execute or automation runs.
           </p>
 
           {!editId && (
@@ -383,25 +342,6 @@ export function PostsClient() {
           </select>
 
           <Textarea label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-
-          <div>
-            <Input
-              label="City (required — under Show more on Facebook)"
-              placeholder="e.g. Houston, TX"
-              value={form.city}
-              onChange={(e) => {
-                setForm({ ...form, city: e.target.value });
-                setCityError('');
-                setCityVerified('');
-              }}
-              onBlur={() => { if (form.city.trim()) validateCityInput(form.city); }}
-            />
-            {cityChecking && <p className="text-sm text-gray-500 mt-1">Verifying city...</p>}
-            {cityVerified && !cityError && (
-              <p className="text-sm text-green-600 mt-1">Verified: {cityVerified}</p>
-            )}
-            {cityError && <p className="text-sm text-red-600 mt-1">{cityError}</p>}
-          </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Images (optional)</label>

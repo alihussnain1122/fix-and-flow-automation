@@ -1,6 +1,13 @@
 import { CreateScheduleDto, UpdateScheduleDto, ScheduleStatus, JobName } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
-import { parsePagination, DEFAULT_MIN_INTERVAL_MINUTES, DEFAULT_MAX_INTERVAL_MINUTES } from '@fix-and-flow/shared';
+import {
+  parsePagination,
+  DEFAULT_MIN_INTERVAL_MINUTES,
+  DEFAULT_MAX_INTERVAL_MINUTES,
+  DEFAULT_DAILY_POST_LIMIT,
+  MIN_DAILY_POST_LIMIT,
+  MAX_DAILY_POST_LIMIT,
+} from '@fix-and-flow/shared';
 import { getPostingQueue } from '../../config/queue';
 import { logService } from '../../services/log.service';
 import { LogCategory, LogLevel } from '@fix-and-flow/types';
@@ -10,6 +17,16 @@ import { schedulerRepository } from './scheduler.repository';
 import { randomBetween } from '../../utils/human-behavior';
 
 export class SchedulerService {
+  private resolveDailyPostLimit(limit?: number): number {
+    const value = limit ?? DEFAULT_DAILY_POST_LIMIT;
+    if (value < MIN_DAILY_POST_LIMIT || value > MAX_DAILY_POST_LIMIT) {
+      throw new ValidationError(
+        `Daily post limit must be between ${MIN_DAILY_POST_LIMIT} and ${MAX_DAILY_POST_LIMIT} posts per account`,
+      );
+    }
+    return value;
+  }
+
   async findAll(page?: number, limit?: number) {
     const { offset, limit: l } = parsePagination(page, limit);
     return schedulerRepository.findAll(offset, l);
@@ -37,13 +54,14 @@ export class SchedulerService {
     }
 
     const nextRunAt = this.calculateNextRun(minInterval, maxInterval);
+    const dailyPostLimit = this.resolveDailyPostLimit(dto.dailyPostLimit);
 
     const schedule = await schedulerRepository.create({
       accountId: dto.accountId,
       cronExpression: dto.cronExpression,
       minIntervalMinutes: minInterval,
       maxIntervalMinutes: maxInterval,
-      dailyPostLimit: dto.dailyPostLimit,
+      dailyPostLimit,
       nextRunAt,
     });
 
@@ -64,7 +82,9 @@ export class SchedulerService {
     if (dto.cronExpression !== undefined) updateData.cronExpression = dto.cronExpression;
     if (dto.minIntervalMinutes !== undefined) updateData.minIntervalMinutes = dto.minIntervalMinutes;
     if (dto.maxIntervalMinutes !== undefined) updateData.maxIntervalMinutes = dto.maxIntervalMinutes;
-    if (dto.dailyPostLimit !== undefined) updateData.dailyPostLimit = dto.dailyPostLimit;
+    if (dto.dailyPostLimit !== undefined) {
+      updateData.dailyPostLimit = this.resolveDailyPostLimit(dto.dailyPostLimit);
+    }
     if (dto.status !== undefined) updateData.status = dto.status;
     if (dto.nextRunAt !== undefined) updateData.nextRunAt = dto.nextRunAt;
 
@@ -102,7 +122,7 @@ export class SchedulerService {
           continue;
         }
 
-        const post = await postingService.create({ accountId: schedule.accountId });
+        const post = await postingService.createAutomatedPost(schedule.accountId);
 
         const queue = getPostingQueue();
         await queue.add(JobName.CREATE_POST, {

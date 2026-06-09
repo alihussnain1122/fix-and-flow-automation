@@ -98,6 +98,28 @@ export class PostingRepository {
     return result.rows.map((row) => this.mapRow(row));
   }
 
+  async countPublishedToday(): Promise<number> {
+    const result = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM posts WHERE status = $1 AND published_at >= CURRENT_DATE`,
+      [PostStatus.PUBLISHED],
+    );
+    return parseInt(result.rows[0]?.count ?? '0', 10);
+  }
+
+  async findPublishedDueForRefresh(minHours: number, limit: number): Promise<Post[]> {
+    const result = await query<PostRow>(
+      `SELECT * FROM posts
+       WHERE status = $1
+         AND published_at IS NOT NULL
+         AND published_at <= NOW() - ($2 || ' hours')::interval
+         AND (metadata->>'refreshQueuedAt') IS NULL
+       ORDER BY published_at ASC
+       LIMIT $3`,
+      [PostStatus.PUBLISHED, minHours, limit],
+    );
+    return result.rows.map((row) => this.mapRow(row));
+  }
+
   async create(data: {
     accountId: string;
     contentTemplateId?: string;

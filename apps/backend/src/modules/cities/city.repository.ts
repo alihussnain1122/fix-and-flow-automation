@@ -92,6 +92,19 @@ export class CityRepository {
   async incrementPostCount(id: string) {
     await query(`UPDATE cities SET post_count = post_count + 1 WHERE id = $1`, [id]);
   }
+
+  async findNextRotatingCity(): Promise<{ id: string; label: string } | null> {
+    const result = await query<{ id: string; name: string; state: string | null }>(
+      `SELECT id, name, state FROM cities
+       WHERE is_active = true
+       ORDER BY post_count ASC, name ASC
+       LIMIT 1`,
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const label = row.state ? `${row.name}, ${row.state}` : row.name;
+    return { id: row.id, label };
+  }
 }
 
 export const cityRepository = new CityRepository();

@@ -74,11 +74,12 @@ export const api = {
       request<Record<string, unknown>>(`/posts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id: string) => request<null>(`/posts/${id}`, { method: 'DELETE' }),
     execute: (id: string) => request<null>(`/posts/${id}/execute`, { method: 'POST' }),
-    getAutomationSettings: () => request<{ enabled: boolean }>('/posts/automation/settings'),
-    setAutomationSettings: (enabled: boolean) =>
-      request<{ enabled: boolean }>('/posts/automation/settings', {
+    getAutomationSettings: () => request<Record<string, unknown>>('/posts/automation/settings'),
+    getAutomationKpi: () => request<Record<string, unknown>>('/posts/automation/kpi'),
+    setAutomationSettings: (body: Record<string, unknown>) =>
+      request<Record<string, unknown>>('/posts/automation/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify(body),
       }),
   },
 

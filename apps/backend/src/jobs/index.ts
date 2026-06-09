@@ -30,7 +30,7 @@ export async function initializeWorkers(): Promise<void> {
           logger.warn({ jobName: job.name }, 'Unknown posting job');
       }
     },
-    2,
+    3,
   );
 
   registerWorker(

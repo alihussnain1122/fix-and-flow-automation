@@ -1,4 +1,4 @@
-import { AccountStatus, CreateAccountDto, UpdateAccountDto } from '@fix-and-flow/types';
+import { AccountStatus, CreateAccountDto, UpdateAccountDto, ScheduleStatus } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError, ConflictError } from '@fix-and-flow/shared';
 import { isValidEmail, parsePagination } from '@fix-and-flow/shared';
 import { encrypt } from '../../utils/encryption';
@@ -8,6 +8,7 @@ import { LogCategory, LogLevel } from '@fix-and-flow/types';
 import { credentialsService } from '../../services/credentials.service';
 import { playwrightEngine } from '../posting/playwright.engine';
 import { proxyService } from '../proxies/proxy.service';
+import { schedulerRepository } from '../scheduler/scheduler.repository';
 import { logger } from '../../config/logger';
 import { accountRepository } from './account.repository';
 
@@ -45,7 +46,6 @@ export class AccountService {
       displayName: dto.displayName,
       proxyId,
       userAgent: dto.userAgent ?? getRandomUserAgent(),
-      dailyPostLimit: dto.dailyPostLimit,
     });
 
     if (proxyId) {
@@ -80,7 +80,6 @@ export class AccountService {
       updateData.proxyId = dto.proxyId;
     }
     if (dto.userAgent !== undefined) updateData.userAgent = dto.userAgent;
-    if (dto.dailyPostLimit !== undefined) updateData.dailyPostLimit = dto.dailyPostLimit;
     if (dto.metadata !== undefined) updateData.metadata = dto.metadata;
     if (dto.cookies !== undefined) updateData.cookiesEncrypted = encrypt(dto.cookies);
 
@@ -308,11 +307,23 @@ export class AccountService {
     });
   }
 
+  async getScheduleDailyLimit(accountId: string): Promise<number | null> {
+    const scheduleRow = await schedulerRepository.findByAccountId(accountId);
+    if (!scheduleRow) return null;
+    return schedulerRepository.mapRow(scheduleRow).dailyPostLimit;
+  }
+
   async canPost(id: string): Promise<boolean> {
     const account = await this.findById(id);
-    return (
-      account.status === AccountStatus.ACTIVE && account.postsToday < account.dailyPostLimit
-    );
+    if (account.status !== AccountStatus.ACTIVE) return false;
+
+    const scheduleRow = await schedulerRepository.findByAccountId(id);
+    if (!scheduleRow) return false;
+
+    const schedule = schedulerRepository.mapRow(scheduleRow);
+    if (schedule.status !== ScheduleStatus.ACTIVE) return false;
+
+    return account.postsToday < schedule.dailyPostLimit;
   }
 }
 

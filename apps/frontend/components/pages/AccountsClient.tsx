@@ -8,24 +8,30 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { DataTable } from '@/components/ui/DataTable';
 import { Modal, ModalActions } from '@/components/ui/Modal';
-import { Input, Select } from '@/components/ui/FormFields';
+import { Input } from '@/components/ui/FormFields';
 
 export function AccountsClient() {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [scheduleLimits, setScheduleLimits] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectMessage, setConnectMessage] = useState('');
-  const [form, setForm] = useState({ email: '', password: '', displayName: '', dailyPostLimit: '5' });
+  const [form, setForm] = useState({ email: '', password: '', displayName: '' });
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.accounts.list();
-      setItems(res.items);
+      const [accounts, schedules] = await Promise.all([api.accounts.list(), api.schedules.list()]);
+      setItems(accounts.items);
+      const limits = new Map<string, number>();
+      for (const schedule of schedules.items) {
+        limits.set(String(schedule.accountId), Number(schedule.dailyPostLimit));
+      }
+      setScheduleLimits(limits);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load accounts');
     } finally {
@@ -44,10 +50,9 @@ export function AccountsClient() {
         email: form.email,
         password: form.password,
         displayName: form.displayName || undefined,
-        dailyPostLimit: Number(form.dailyPostLimit),
       });
       setModalOpen(false);
-      setForm({ email: '', password: '', displayName: '', dailyPostLimit: '5' });
+      setForm({ email: '', password: '', displayName: '' });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create account');
@@ -91,7 +96,10 @@ export function AccountsClient() {
     {
       key: 'postsToday',
       label: 'Posts Today',
-      render: (r: Record<string, unknown>) => `${r.postsToday}/${r.dailyPostLimit}`,
+      render: (r: Record<string, unknown>) => {
+        const limit = scheduleLimits.get(String(r.id));
+        return limit != null ? `${r.postsToday}/${limit}` : `${r.postsToday} (no schedule)`;
+      },
     },
     {
       key: 'createdAt',
@@ -150,6 +158,9 @@ export function AccountsClient() {
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">{error}</div>
       )}
+      <p className="mb-4 text-sm text-gray-600">
+        Daily post limits are configured per account on the Schedules page — not here.
+      </p>
       <div className="flex justify-end mb-6">
         <Button onClick={() => setModalOpen(true)}>
           <Plus className="w-4 h-4" /> Add Account
@@ -169,16 +180,6 @@ export function AccountsClient() {
           <Input label="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
           <Input label="Password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
           <Input label="Display Name" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
-          <Select
-            label="Daily Post Limit"
-            value={form.dailyPostLimit}
-            onChange={(e) => setForm({ ...form, dailyPostLimit: e.target.value })}
-            options={[
-              { value: '3', label: '3 posts/day' },
-              { value: '4', label: '4 posts/day' },
-              { value: '5', label: '5 posts/day' },
-            ]}
-          />
         </div>
       </Modal>
     </>

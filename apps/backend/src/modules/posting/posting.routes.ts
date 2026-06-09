@@ -5,6 +5,7 @@ const router = Router();
 
 router.get('/', postingController.findAll);
 router.get('/automation/settings', postingController.getAutomationSettings);
+router.get('/automation/kpi', postingController.getAutomationKpi);
 router.patch('/automation/settings', postingController.setAutomationSettings);
 router.get('/:id', postingController.findById);
 router.patch('/:id', postingController.update);

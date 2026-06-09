@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { asyncHandler, sendSuccess, sendPaginated } from '../../utils';
-import { ValidationError } from '@fix-and-flow/shared';
+import { automationService } from '../../services/automation.service';
 import { postingService } from './posting.service';
 import { CreatePostDto, UpdatePostDto } from '@fix-and-flow/types';
 
@@ -48,12 +48,35 @@ export class PostingController {
   });
 
   setAutomationSettings = asyncHandler(async (req: Request, res: Response) => {
-    const { enabled } = req.body as { enabled?: boolean };
-    if (typeof enabled !== 'boolean') {
-      throw new ValidationError('enabled must be a boolean');
+    const body = req.body as { enabled?: boolean; postsEnabled?: boolean } & Record<string, unknown>;
+
+    if (typeof body.enabled === 'boolean' && Object.keys(body).length === 1) {
+      const result = await postingService.setAutomationEnabled(body.enabled);
+      sendSuccess(res, result, body.enabled ? 'Automatic posting enabled' : 'Automatic posting disabled');
+      return;
     }
-    const settings = await postingService.setAutomationEnabled(enabled);
-    sendSuccess(res, settings, enabled ? 'Automatic posting enabled' : 'Automatic posting disabled');
+
+    const settings = await postingService.updateAutomationSettings({
+      masterEnabled: body.masterEnabled as boolean | undefined,
+      postsEnabled: (body.postsEnabled ?? body.enabled) as boolean | undefined,
+      inboxEnabled: body.inboxEnabled as boolean | undefined,
+      listingRefreshEnabled: body.listingRefreshEnabled as boolean | undefined,
+      accountHealthEnabled: body.accountHealthEnabled as boolean | undefined,
+      proxyHealthEnabled: body.proxyHealthEnabled as boolean | undefined,
+      dailyPostTarget: body.dailyPostTarget as number | undefined,
+      inboxPollIntervalSeconds: body.inboxPollIntervalSeconds as number | undefined,
+      listingRefreshMinHours: body.listingRefreshMinHours as number | undefined,
+      listingRefreshMaxHours: body.listingRefreshMaxHours as number | undefined,
+      postsPerSchedulerTick: body.postsPerSchedulerTick as number | undefined,
+      defaultCategory: body.defaultCategory as string | undefined,
+      defaultCondition: body.defaultCondition as string | undefined,
+    });
+    sendSuccess(res, settings, 'Automation settings updated');
+  });
+
+  getAutomationKpi = asyncHandler(async (_req: Request, res: Response) => {
+    const kpi = await automationService.getKpiSnapshot();
+    sendSuccess(res, kpi);
   });
 
   testInteraction = asyncHandler(async (req: Request, res: Response) => {

@@ -14,6 +14,9 @@ export function CitiesClient() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ name: '', state: '', country: 'US' });
+  const [cityError, setCityError] = useState('');
+  const [cityVerified, setCityVerified] = useState('');
+  const [cityChecking, setCityChecking] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -21,6 +24,50 @@ export function CitiesClient() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const validateCityInput = useCallback(async (name: string, state: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setCityError('City name is required');
+      setCityVerified('');
+      return false;
+    }
+
+    const query = [trimmedName, state.trim()].filter(Boolean).join(', ');
+    setCityChecking(true);
+    setCityError('');
+    try {
+      const result = await api.cities.validate(query);
+      if (!result.valid) {
+        setCityError(result.reason ?? 'City not found');
+        setCityVerified('');
+        return false;
+      }
+      const normalized = result.normalized ?? query;
+      setCityVerified(normalized);
+      if (result.name) {
+        setForm((prev) => ({
+          ...prev,
+          name: result.name ?? prev.name,
+          state: result.state ?? prev.state,
+        }));
+      }
+      return true;
+    } catch (err) {
+      setCityError(err instanceof Error ? err.message : 'Could not verify city');
+      setCityVerified('');
+      return false;
+    } finally {
+      setCityChecking(false);
+    }
+  }, []);
+
+  const openCreate = () => {
+    setForm({ name: '', state: '', country: 'US' });
+    setCityError('');
+    setCityVerified('');
+    setModalOpen(true);
+  };
 
   const columns = [
     { key: 'name', label: 'City' },
@@ -40,19 +87,55 @@ export function CitiesClient() {
 
   return (
     <>
+      <p className="mb-4 text-sm text-gray-600">
+        Add US cities here. Each city is verified online before saving. Playwright rotates through active cities when posting.
+      </p>
       <div className="flex justify-end mb-6">
-        <Button onClick={() => setModalOpen(true)}><Plus className="w-4 h-4" /> Add City</Button>
+        <Button onClick={openCreate}><Plus className="w-4 h-4" /> Add City</Button>
       </div>
       <DataTable columns={columns} data={items} loading={loading} />
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Add City"
         footer={<ModalActions onCancel={() => setModalOpen(false)} onSubmit={async () => {
-          await api.cities.create(form); setModalOpen(false); load();
+          const ok = await validateCityInput(form.name, form.state);
+          if (!ok) return;
+          try {
+            await api.cities.create(form);
+            setModalOpen(false);
+            load();
+          } catch (err) {
+            setCityError(err instanceof Error ? err.message : 'Could not add city');
+          }
         }} />}>
         <div className="space-y-4">
-          <Input label="City Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+          <Input
+            label="City Name"
+            placeholder="e.g. Houston"
+            value={form.name}
+            onChange={(e) => {
+              setForm({ ...form, name: e.target.value });
+              setCityError('');
+              setCityVerified('');
+            }}
+            onBlur={() => { if (form.name.trim()) validateCityInput(form.name, form.state); }}
+          />
+          <Input
+            label="State"
+            placeholder="e.g. TX"
+            value={form.state}
+            onChange={(e) => {
+              setForm({ ...form, state: e.target.value });
+              setCityError('');
+              setCityVerified('');
+            }}
+            onBlur={() => { if (form.name.trim()) validateCityInput(form.name, form.state); }}
+          />
           <Input label="Country" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
+          {cityChecking && <p className="text-sm text-gray-500">Verifying city online...</p>}
+          {cityVerified && !cityError && (
+            <p className="text-sm text-green-600">Verified: {cityVerified}</p>
+          )}
+          {cityError && <p className="text-sm text-red-600">{cityError}</p>}
         </div>
       </Modal>
     </>

@@ -178,6 +178,18 @@ export class AccountRepository {
     );
     return result.rows[0]?.cookies_encrypted ?? null;
   }
+
+  async findActiveForAutomation(): Promise<Account[]> {
+    const result = await query<AccountRow>(
+      `SELECT id, email, password_encrypted, display_name, status, proxy_id,
+              cookies_encrypted, user_agent, last_login_at, last_post_at,
+              posts_today, daily_post_limit, metadata, created_at, updated_at
+       FROM accounts
+       WHERE status = 'active' AND cookies_encrypted IS NOT NULL
+       ORDER BY last_post_at ASC NULLS FIRST`,
+    );
+    return result.rows.map((row) => this.mapRow(row));
+  }
 }
 
 export const accountRepository = new AccountRepository();

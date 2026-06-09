@@ -2,6 +2,7 @@ import { AccountStatus, PostStatus, UpdatePostDto } from '@fix-and-flow/types';
 import { NotFoundError, ValidationError } from '@fix-and-flow/shared';
 import { parsePagination, MAX_RETRY_ATTEMPTS, MARKETPLACE_CATEGORIES, MARKETPLACE_CONDITIONS } from '@fix-and-flow/shared';
 import { JobName } from '@fix-and-flow/types';
+import { env } from '../../config/env';
 import { getPostingQueue } from '../../config/queue';
 import { logService } from '../../services/log.service';
 import { LogCategory, LogLevel } from '@fix-and-flow/types';
@@ -9,6 +10,7 @@ import { credentialsService } from '../../services/credentials.service';
 import { settingsService } from '../../services/settings.service';
 import { cityValidationService } from '../../services/city-validation.service';
 import { accountService } from '../accounts/account.service';
+import { cityRepository } from '../cities/city.repository';
 import { contentService } from '../content/content.service';
 import { postingRepository } from './posting.repository';
 import { playwrightEngine } from './playwright.engine';
@@ -21,6 +23,34 @@ export class PostingService {
       throw new ValidationError(result.reason ?? 'Invalid city');
     }
     return result.normalized ?? cityInput.trim();
+  }
+
+  /** Picks the next city from Cities admin (validated online) when the post has none yet. */
+  private async assignCityForPost(
+    post: Awaited<ReturnType<typeof postingRepository.mapRow>>,
+  ): Promise<{ city: string; cityId?: string }> {
+    const existing = post.metadata?.city as string | undefined;
+    if (existing?.trim()) {
+      const city = await this.resolveCity(existing);
+      if (!city) {
+        throw new ValidationError('Post city failed online validation');
+      }
+      return { city };
+    }
+
+    const rotated = await cityRepository.findNextRotatingCity();
+    if (!rotated) {
+      throw new ValidationError(
+        'No cities configured — add and verify cities under Cities before posting',
+      );
+    }
+
+    const city = await this.resolveCity(rotated.label);
+    if (!city) {
+      throw new ValidationError(`City "${rotated.label}" failed online validation`);
+    }
+
+    return { city, cityId: rotated.id };
   }
 
   private resolveCategory(categoryInput?: string): string {
@@ -85,7 +115,6 @@ export class PostingService {
     let description = dto.description;
     let price = dto.price;
     let imageUrls = dto.imageUrls;
-    let city: string | undefined;
 
     if (dto.contentTemplateId) {
       const template = await contentService.findById(dto.contentTemplateId);
@@ -93,14 +122,10 @@ export class PostingService {
       description = description ?? template.description;
       price = price ?? template.price ?? undefined;
       imageUrls = imageUrls ?? template.imageUrls;
-      city = template.city ?? undefined;
     }
 
     if (!title || !description) {
-      const rotated = await contentService.rotateContent(
-        account.metadata?.city as string,
-        dto.accountId,
-      );
+      const rotated = await contentService.rotateContent(undefined, dto.accountId);
       if (!rotated) throw new ValidationError('No content available for posting');
       title = title ?? rotated.title;
       description = description ?? rotated.description;
@@ -108,13 +133,6 @@ export class PostingService {
       imageUrls = imageUrls ?? rotated.imageUrls;
     }
 
-    city = dto.city ?? city ?? (account.metadata?.city as string | undefined);
-    if (city) {
-      city = await this.resolveCity(city);
-    }
-    if (!city) {
-      throw new ValidationError('City is required for Marketplace posting');
-    }
     const category = this.resolveCategory(dto.category);
     const condition = this.resolveCondition(dto.condition);
 
@@ -127,7 +145,7 @@ export class PostingService {
       imageUrls,
       scheduledAt: dto.scheduledAt,
       status: PostStatus.PENDING,
-      metadata: this.buildPostMetadata(city, category, condition),
+      metadata: this.buildPostMetadata(undefined, category, condition),
     });
 
     await logService.create({
@@ -138,7 +156,7 @@ export class PostingService {
       postId: post.id,
     });
 
-    return { ...post, city, category, condition };
+    return { ...post, category, condition };
   }
 
   async update(id: string, dto: UpdatePostDto) {
@@ -214,10 +232,28 @@ export class PostingService {
 
     const canPost = await accountService.canPost(post.accountId);
     if (!canPost) {
-      throw new ValidationError('Account has reached daily post limit or is not active');
+      const scheduleLimit = await accountService.getScheduleDailyLimit(post.accountId);
+      if (scheduleLimit === null) {
+        throw new ValidationError(
+          'No schedule configured for this account — create one under Schedules and set the daily post limit',
+        );
+      }
+      throw new ValidationError(
+        `Daily post limit reached (${scheduleLimit}/day from Schedules) or schedule is paused`,
+      );
     }
 
     await postingRepository.update(postId, { status: PostStatus.IN_PROGRESS });
+
+    const { city, cityId } = await this.assignCityForPost(post);
+    if (!(post.metadata?.city as string | undefined)?.trim()) {
+      await postingRepository.update(postId, {
+        metadata: { ...post.metadata, city },
+      });
+    }
+    if (cityId) {
+      await cityRepository.incrementPostCount(cityId);
+    }
 
     const creds = await credentialsService.buildForAccount(post.accountId);
     const listing = {
@@ -225,10 +261,7 @@ export class PostingService {
       description: post.description,
       price: post.price ?? 0,
       imageUrls: post.imageUrls,
-      city:
-        (post.metadata?.city as string) ??
-        (account.metadata?.city as string) ??
-        undefined,
+      city,
       category: this.resolveCategory(post.metadata?.category as string | undefined),
       condition: this.resolveCondition(
         (post.metadata?.condition as string | undefined) ?? MARKETPLACE_CONDITIONS[0],
@@ -246,7 +279,7 @@ export class PostingService {
           await accountService.markAsFlagged(post.accountId, health.reason);
         }
       },
-    }, { allowCredentialLogin: false });
+    }, { allowCredentialLogin: false, headless: env.PLAYWRIGHT_POST_HEADLESS });
 
     if (result.success) {
       await postingRepository.update(postId, {
@@ -284,9 +317,8 @@ export class PostingService {
     }
   }
 
-  async getAutomationSettings(): Promise<{ enabled: boolean }> {
-    const enabled = await settingsService.isPostsAutomationEnabled();
-    return { enabled };
+  async getAutomationSettings() {
+    return settingsService.getAutomationSettings();
   }
 
   async setAutomationEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
@@ -299,16 +331,90 @@ export class PostingService {
     return { enabled };
   }
 
-  /** Picks the oldest pending post and queues it when automation is enabled. */
-  async processAutomationQueue(): Promise<number> {
-    const enabled = await settingsService.isPostsAutomationEnabled();
-    if (!enabled) return 0;
+  async updateAutomationSettings(
+    patch: Parameters<typeof settingsService.updateAutomationSettings>[0],
+  ) {
+    return settingsService.updateAutomationSettings(patch);
+  }
 
-    const pending = await postingRepository.findPendingForAutomation(5);
+  /** Creates a listing with rotated city + content for 24/7 scheduled posting. */
+  async createAutomatedPost(accountId: string) {
+    const settings = await settingsService.getAutomationSettings();
+    const rotated = await contentService.rotateContent(undefined, accountId);
+    if (!rotated) {
+      throw new ValidationError('No content templates available for automated posting');
+    }
+
+    return this.create({
+      accountId,
+      contentTemplateId: rotated.templateId,
+      title: rotated.title,
+      description: rotated.description,
+      price: rotated.price ?? undefined,
+      imageUrls: rotated.imageUrls,
+      category: settings.defaultCategory,
+      condition: settings.defaultCondition,
+    });
+  }
+
+  /** Clone a published listing with fresh content/city for 24–48h refresh cycle. */
+  async createRefreshListing(publishedPostId: string) {
+    const source = await this.findById(publishedPostId);
+    if (source.status !== PostStatus.PUBLISHED) {
+      throw new ValidationError('Only published listings can be refreshed');
+    }
+
+    const settings = await settingsService.getAutomationSettings();
+    const rotated = await contentService.rotateContent(undefined, source.accountId);
+
+    const metadata = {
+      ...source.metadata,
+      refreshQueuedAt: new Date().toISOString(),
+      refreshedFromPostId: source.id,
+    };
+    await postingRepository.update(source.id, { metadata });
+
+    const post = await this.create({
+      accountId: source.accountId,
+      contentTemplateId: rotated?.templateId,
+      title: rotated?.title ?? source.title,
+      description: rotated?.description ?? source.description,
+      price: rotated?.price ?? source.price ?? undefined,
+      imageUrls: rotated?.imageUrls ?? source.imageUrls,
+      category: (source.metadata?.category as string) ?? settings.defaultCategory,
+      condition: (source.metadata?.condition as string) ?? settings.defaultCondition,
+    });
+
+    await logService.create({
+      level: LogLevel.INFO,
+      category: LogCategory.POSTING,
+      message: `Listing refresh queued from post ${source.id}`,
+      accountId: source.accountId,
+      postId: post.id,
+      metadata: { sourcePostId: source.id },
+    });
+
+    return post;
+  }
+
+  /** Queues pending posts up to daily target and per-tick limit. */
+  async processAutomationQueue(): Promise<number> {
+    const settings = await settingsService.getAutomationSettings();
+    if (!settings.masterEnabled || !settings.postsEnabled) return 0;
+
+    const publishedToday = await postingRepository.countPublishedToday();
+    if (publishedToday >= settings.dailyPostTarget) return 0;
+
+    const remainingToday = settings.dailyPostTarget - publishedToday;
+    const batchSize = Math.min(settings.postsPerSchedulerTick, remainingToday);
+
+    const pending = await postingRepository.findPendingForAutomation(batchSize);
     const queue = getPostingQueue();
     let processed = 0;
 
     for (const post of pending) {
+      if (processed >= batchSize) break;
+
       const account = await accountService.findById(post.accountId).catch(() => null);
       if (!account || account.status !== AccountStatus.ACTIVE) continue;
 
@@ -338,7 +444,6 @@ export class PostingService {
       });
 
       processed++;
-      break;
     }
 
     return processed;
